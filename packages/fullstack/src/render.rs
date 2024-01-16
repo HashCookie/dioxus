@@ -45,15 +45,17 @@ impl SsrRendererPool {
                         .expect("couldn't spawn runtime")
                         .block_on(async move {
                             let mut vdom = VirtualDom::new_with_props(component, props);
+                            // Make sure the evaluator is initialized
+                            dioxus_ssr::eval::init_eval(vdom.base_scope());
                             let mut to = WriteBuffer { buffer: Vec::new() };
                             // before polling the future, we need to set the context
                             let prev_context =
                                 SERVER_CONTEXT.with(|ctx| ctx.replace(server_context));
                             // poll the future, which may call server_context()
-                            log::info!("Rebuilding vdom");
+                            tracing::info!("Rebuilding vdom");
                             let _ = vdom.rebuild();
                             vdom.wait_for_suspense().await;
-                            log::info!("Suspense resolved");
+                            tracing::info!("Suspense resolved");
                             // after polling the future, we need to restore the context
                             SERVER_CONTEXT.with(|ctx| ctx.replace(prev_context));
 
@@ -63,7 +65,7 @@ impl SsrRendererPool {
                             }
                             if let Err(err) = renderer.render_to(&mut to, &vdom) {
                                 let _ = tx.send(Err(
-                                    dioxus_router::prelude::IncrementalRendererError::RenderError(
+                                    dioxus_ssr::incremental::IncrementalRendererError::RenderError(
                                         err,
                                     ),
                                 ));
@@ -116,10 +118,10 @@ impl SsrRendererPool {
                                             let prev_context = SERVER_CONTEXT
                                                 .with(|ctx| ctx.replace(Box::new(server_context)));
                                             // poll the future, which may call server_context()
-                                            log::info!("Rebuilding vdom");
+                                            tracing::info!("Rebuilding vdom");
                                             let _ = vdom.rebuild();
                                             vdom.wait_for_suspense().await;
-                                            log::info!("Suspense resolved");
+                                            tracing::info!("Suspense resolved");
                                             // after polling the future, we need to restore the context
                                             SERVER_CONTEXT.with(|ctx| ctx.replace(prev_context));
                                         })
@@ -234,7 +236,9 @@ impl<P: Clone + Serialize + Send + Sync + 'static> dioxus_ssr::incremental::Wrap
         to: &mut R,
     ) -> Result<(), dioxus_ssr::incremental::IncrementalRendererError> {
         // serialize the props
-        crate::html_storage::serialize::encode_props_in_element(&self.cfg.props, to)?;
+        crate::html_storage::serialize::encode_props_in_element(&self.cfg.props, to).map_err(
+            |err| dioxus_ssr::incremental::IncrementalRendererError::Other(Box::new(err)),
+        )?;
         // serialize the server state
         crate::html_storage::serialize::encode_in_element(
             &*self.server_context.html_data().map_err(|_| {
@@ -256,7 +260,8 @@ impl<P: Clone + Serialize + Send + Sync + 'static> dioxus_ssr::incremental::Wrap
                 }))
             })?,
             to,
-        )?;
+        )
+        .map_err(|err| dioxus_ssr::incremental::IncrementalRendererError::Other(Box::new(err)))?;
 
         #[cfg(all(debug_assertions, feature = "hot-reload"))]
         {

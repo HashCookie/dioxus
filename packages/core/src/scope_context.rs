@@ -1,5 +1,5 @@
 use crate::{
-    innerlude::{ErrorBoundary, Scheduler, SchedulerMsg},
+    innerlude::{Scheduler, SchedulerMsg},
     runtime::{with_current_scope, with_runtime},
     Element, ScopeId, TaskId,
 };
@@ -7,7 +7,6 @@ use rustc_hash::FxHashSet;
 use std::{
     any::Any,
     cell::{Cell, RefCell},
-    fmt::Debug,
     future::Future,
     rc::Rc,
     sync::Arc,
@@ -107,27 +106,48 @@ impl ScopeContext {
     ///
     /// Clones the state if it exists.
     pub fn consume_context<T: 'static + Clone>(&self) -> Option<T> {
+        tracing::trace!(
+            "looking for context {} ({:?}) in {}",
+            std::any::type_name::<T>(),
+            std::any::TypeId::of::<T>(),
+            self.name
+        );
         if let Some(this_ctx) = self.has_context() {
             return Some(this_ctx);
         }
 
         let mut search_parent = self.parent_id;
-        with_runtime(|runtime| {
+        let cur_runtime = with_runtime(|runtime: &crate::runtime::Runtime| {
             while let Some(parent_id) = search_parent {
                 let parent = runtime.get_context(parent_id).unwrap();
-                if let Some(shared) = parent
-                    .shared_contexts
-                    .borrow()
-                    .iter()
-                    .find_map(|any| any.downcast_ref::<T>())
-                {
+                tracing::trace!(
+                    "looking for context {} ({:?}) in {}",
+                    std::any::type_name::<T>(),
+                    std::any::TypeId::of::<T>(),
+                    parent.name
+                );
+                if let Some(shared) = parent.shared_contexts.borrow().iter().find_map(|any| {
+                    tracing::trace!("found context {:?}", (**any).type_id());
+                    any.downcast_ref::<T>()
+                }) {
                     return Some(shared.clone());
                 }
                 search_parent = parent.parent_id;
             }
             None
-        })
-        .flatten()
+        });
+
+        match cur_runtime.flatten() {
+            Some(ctx) => Some(ctx),
+            None => {
+                tracing::trace!(
+                    "context {} ({:?}) not found",
+                    std::any::type_name::<T>(),
+                    std::any::TypeId::of::<T>()
+                );
+                None
+            }
+        }
     }
 
     /// Expose state to children further down the [`crate::VirtualDom`] Tree. Requires `Clone` on the context to allow getting values down the tree.
@@ -152,6 +172,12 @@ impl ScopeContext {
     /// }
     /// ```
     pub fn provide_context<T: 'static + Clone>(&self, value: T) -> T {
+        tracing::trace!(
+            "providing context {} ({:?}) in {}",
+            std::any::type_name::<T>(),
+            std::any::TypeId::of::<T>(),
+            self.name
+        );
         let mut contexts = self.shared_contexts.borrow_mut();
 
         // If the context exists, swap it out for the new value
@@ -179,7 +205,7 @@ impl ScopeContext {
     pub fn provide_root_context<T: 'static + Clone>(&self, context: T) -> T {
         with_runtime(|runtime| {
             runtime
-                .get_context(ScopeId(0))
+                .get_context(ScopeId::ROOT)
                 .unwrap()
                 .provide_context(context)
         })
@@ -203,17 +229,7 @@ impl ScopeContext {
     /// This is good for tasks that need to be run after the component has been dropped.
     pub fn spawn_forever(&self, fut: impl Future<Output = ()> + 'static) -> TaskId {
         // The root scope will never be unmounted so we can just add the task at the top of the app
-        let id = self.tasks.spawn(ScopeId(0), fut);
-
-        // wake up the scheduler if it is sleeping
-        self.tasks
-            .sender
-            .unbounded_send(SchedulerMsg::TaskNotified(id))
-            .expect("Scheduler should exist");
-
-        self.spawned_tasks.borrow_mut().insert(id);
-
-        id
+        self.tasks.spawn(ScopeId::ROOT, fut)
     }
 
     /// Informs the scheduler that this task is no longer needed and should be removed.
@@ -221,19 +237,6 @@ impl ScopeContext {
     /// This drops the task immediately.
     pub fn remove_future(&self, id: TaskId) {
         self.tasks.remove(id);
-    }
-
-    /// Inject an error into the nearest error boundary and quit rendering
-    ///
-    /// The error doesn't need to implement Error or any specific traits since the boundary
-    /// itself will downcast the error into a trait object.
-    pub fn throw(&self, error: impl Debug + 'static) -> Option<()> {
-        if let Some(cx) = self.consume_context::<Rc<ErrorBoundary>>() {
-            cx.insert_error(self.scope_id(), Box::new(error));
-        }
-
-        // Always return none during a throw
-        None
     }
 
     /// Mark this component as suspended and then return None
@@ -305,11 +308,6 @@ pub fn suspend() -> Option<Element<'static>> {
     None
 }
 
-/// Throw an error into the nearest error boundary
-pub fn throw(error: impl Debug + 'static) -> Option<()> {
-    with_current_scope(|cx| cx.throw(error)).flatten()
-}
-
 /// Pushes the future onto the poll queue to be polled after the component renders.
 pub fn push_future(fut: impl Future<Output = ()> + 'static) -> Option<TaskId> {
     with_current_scope(|cx| cx.push_future(fut))
@@ -320,11 +318,16 @@ pub fn spawn(fut: impl Future<Output = ()> + 'static) {
     with_current_scope(|cx| cx.spawn(fut));
 }
 
+/// Spawn a future on a component given its [`ScopeId`].
+pub fn spawn_at(fut: impl Future<Output = ()> + 'static, scope_id: ScopeId) -> Option<TaskId> {
+    with_runtime(|rt| rt.get_context(scope_id).unwrap().push_future(fut))
+}
+
 /// Spawn a future that Dioxus won't clean up when this component is unmounted
 ///
 /// This is good for tasks that need to be run after the component has been dropped.
 pub fn spawn_forever(fut: impl Future<Output = ()> + 'static) -> Option<TaskId> {
-    with_current_scope(|cx| cx.spawn_forever(fut))
+    spawn_at(fut, ScopeId(0))
 }
 
 /// Informs the scheduler that this task is no longer needed and should be removed.

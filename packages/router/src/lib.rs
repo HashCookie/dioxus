@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+#![doc(html_logo_url = "https://avatars.githubusercontent.com/u/79236386")]
+#![doc(html_favicon_url = "https://avatars.githubusercontent.com/u/79236386")]
 // cannot use forbid, because props derive macro generates #[allow(missing_docs)]
 #![deny(missing_docs)]
 #![allow(non_snake_case)]
@@ -51,6 +53,8 @@ pub mod hooks {
     pub use use_navigator::*;
 }
 
+pub use hooks::router;
+
 /// A collection of useful items most applications might need.
 pub mod prelude {
     pub use crate::components::*;
@@ -81,4 +85,9 @@ pub mod prelude {
 
 mod utils {
     pub(crate) mod use_router_internal;
+}
+
+#[doc(hidden)]
+pub mod exports {
+    pub use urlencoding;
 }

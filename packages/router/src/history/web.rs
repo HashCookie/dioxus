@@ -13,6 +13,16 @@ use super::{
     HistoryProvider,
 };
 
+#[allow(dead_code)]
+fn base_path() -> Option<&'static str> {
+    let base_path = dioxus_cli_config::CURRENT_CONFIG
+        .as_ref()
+        .ok()
+        .and_then(|c| c.dioxus_config.web.app.base_path.as_deref());
+    tracing::trace!("Using base_path from Dioxus.toml: {:?}", base_path);
+    base_path
+}
+
 #[cfg(not(feature = "serde"))]
 #[allow(clippy::extra_unused_type_parameters)]
 fn update_scroll<R>(window: &Window, history: &History) {
@@ -139,7 +149,7 @@ impl<R: Routable> WebHistory<R> {
         );
 
         let current_route = myself.current_route();
-        log::trace!("initial route: {:?}", current_route);
+        tracing::trace!("initial route: {:?}", current_route);
         let current_url = current_route.to_string();
         let state = myself.create_state(current_route);
         let _ = replace_state_with_url(&myself.history, &state, Some(&current_url));
@@ -159,6 +169,10 @@ impl<R: Routable> WebHistory<R> {
                 .set_scroll_restoration(ScrollRestoration::Manual)
                 .expect("`history` can set scroll restoration");
         }
+
+        let prefix = prefix
+            .or_else(|| base_path().map(|s| s.to_string()))
+            .map(|prefix| format!("/{}", prefix.trim_matches('/')));
 
         Self {
             do_scroll_restoration,
@@ -195,14 +209,20 @@ where
     <R as std::str::FromStr>::Err: std::fmt::Display,
 {
     fn route_from_location(&self) -> R {
-        R::from_str(
-            &self
-                .window
-                .location()
-                .pathname()
-                .unwrap_or_else(|_| String::from("/")),
-        )
-        .unwrap_or_else(|err| panic!("{}", err))
+        let location = self.window.location();
+        let path = location.pathname().unwrap_or_else(|_| "/".into())
+            + &location.search().unwrap_or("".into());
+        let path = match self.prefix {
+            None => path,
+            Some(ref prefix) => {
+                if path.starts_with(prefix) {
+                    path[prefix.len()..].to_string()
+                } else {
+                    path
+                }
+            }
+        };
+        R::from_str(&path).unwrap_or_else(|err| panic!("{}", err))
     }
 
     fn full_path(&self, state: &R) -> String {

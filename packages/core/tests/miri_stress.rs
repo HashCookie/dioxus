@@ -15,7 +15,7 @@ fn test_memory_leak() {
         cx.spawn(async {});
 
         if val == 2 || val == 4 {
-            return cx.render(rsx!(()));
+            return render!({});
         }
 
         let name = cx.use_hook(|| String::from("numbers: "));
@@ -62,7 +62,7 @@ fn test_memory_leak() {
     _ = dom.rebuild();
 
     for _ in 0..5 {
-        dom.mark_dirty(ScopeId(0));
+        dom.mark_dirty(ScopeId::ROOT);
         _ = dom.render_immediate();
     }
 }
@@ -73,7 +73,7 @@ fn memo_works_properly() {
         let val = cx.generation();
 
         if val == 2 || val == 4 {
-            return cx.render(rsx!(()));
+            return None;
         }
 
         let name = cx.use_hook(|| String::from("asd"));
@@ -97,13 +97,13 @@ fn memo_works_properly() {
 
     _ = dom.rebuild();
     // todo!()
-    // dom.hard_diff(ScopeId(0));
-    // dom.hard_diff(ScopeId(0));
-    // dom.hard_diff(ScopeId(0));
-    // dom.hard_diff(ScopeId(0));
-    // dom.hard_diff(ScopeId(0));
-    // dom.hard_diff(ScopeId(0));
-    // dom.hard_diff(ScopeId(0));
+    // dom.hard_diff(ScopeId::ROOT);
+    // dom.hard_diff(ScopeId::ROOT);
+    // dom.hard_diff(ScopeId::ROOT);
+    // dom.hard_diff(ScopeId::ROOT);
+    // dom.hard_diff(ScopeId::ROOT);
+    // dom.hard_diff(ScopeId::ROOT);
+    // dom.hard_diff(ScopeId::ROOT);
 }
 
 #[test]

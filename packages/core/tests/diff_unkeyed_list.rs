@@ -9,9 +9,9 @@ fn list_creates_one_by_one() {
 
         cx.render(rsx! {
             div {
-                (0..gen).map(|i| rsx! {
+                for i in 0..gen {
                     div { "{i}" }
-                })
+                }
             }
         })
     });
@@ -27,7 +27,7 @@ fn list_creates_one_by_one() {
     );
 
     // Rendering the first item should replace the placeholder with an element
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -38,7 +38,7 @@ fn list_creates_one_by_one() {
     );
 
     // Rendering the next item should insert after the previous
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -49,7 +49,7 @@ fn list_creates_one_by_one() {
     );
 
     // ... and again!
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -60,7 +60,7 @@ fn list_creates_one_by_one() {
     );
 
     // once more
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -78,9 +78,9 @@ fn removes_one_by_one() {
 
         cx.render(rsx! {
             div {
-                (0..gen).map(|i| rsx! {
+                for i in 0..gen {
                     div { "{i}" }
-                })
+                }
             }
         })
     });
@@ -107,14 +107,14 @@ fn removes_one_by_one() {
 
     // Remove div(3)
     // Rendering the first item should replace the placeholder with an element
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [Remove { id: ElementId(6) }]
     );
 
     // Remove div(2)
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [Remove { id: ElementId(4) }]
@@ -122,7 +122,7 @@ fn removes_one_by_one() {
 
     // Remove div(1) and replace with a placeholder
     // todo: this should just be a remove with no placeholder
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -133,7 +133,7 @@ fn removes_one_by_one() {
 
     // load the 3 and replace the placeholder
     // todo: this should actually be append to, but replace placeholder is fine for now
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -153,10 +153,10 @@ fn list_shrink_multiroot() {
     let mut dom = VirtualDom::new(|cx| {
         cx.render(rsx! {
             div {
-                (0..cx.generation()).map(|i| rsx! {
+                for i in 0..cx.generation() {
                     div { "{i}" }
                     div { "{i}" }
-                })
+                }
             }
         })
     });
@@ -170,7 +170,7 @@ fn list_shrink_multiroot() {
         ]
     );
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -182,7 +182,7 @@ fn list_shrink_multiroot() {
         ]
     );
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -194,7 +194,7 @@ fn list_shrink_multiroot() {
         ]
     );
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -214,10 +214,10 @@ fn removes_one_by_one_multiroot() {
 
         cx.render(rsx! {
             div {
-                (0..gen).map(|i| rsx! {
+                {(0..gen).map(|i| rsx! {
                     div { "{i}" }
                     div { "{i}" }
-                })
+                })}
             }
         })
     });
@@ -249,19 +249,19 @@ fn removes_one_by_one_multiroot() {
         ]
     );
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [Remove { id: ElementId(10) }, Remove { id: ElementId(12) }]
     );
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [Remove { id: ElementId(6) }, Remove { id: ElementId(8) }]
     );
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -276,9 +276,9 @@ fn removes_one_by_one_multiroot() {
 fn two_equal_fragments_are_equal_static() {
     let mut dom = VirtualDom::new(|cx| {
         cx.render(rsx! {
-            (0..5).map(|_| rsx! {
+            for _ in 0..5 {
                 div { "hello" }
-            })
+            }
         })
     });
 
@@ -290,9 +290,9 @@ fn two_equal_fragments_are_equal_static() {
 fn two_equal_fragments_are_equal() {
     let mut dom = VirtualDom::new(|cx| {
         cx.render(rsx! {
-            (0..5).map(|i| rsx! {
+            for i in 0..5 {
                 div { "hello {i}" }
-            })
+            }
         })
     });
 
@@ -311,7 +311,9 @@ fn remove_many() {
         };
 
         cx.render(rsx! {
-            (0..num).map(|i| rsx! { div { "hello {i}" } })
+            for i in 0..num {
+                div { "hello {i}" }
+            }
         })
     });
 
@@ -328,7 +330,7 @@ fn remove_many() {
     }
 
     {
-        dom.mark_dirty(ScopeId(0));
+        dom.mark_dirty(ScopeId::ROOT);
         let edits = dom.render_immediate().santize();
         assert_eq!(
             edits.edits,
@@ -341,7 +343,7 @@ fn remove_many() {
     }
 
     {
-        dom.mark_dirty(ScopeId(0));
+        dom.mark_dirty(ScopeId::ROOT);
         let edits = dom.render_immediate().santize();
         assert_eq!(
             edits.edits,
@@ -360,7 +362,7 @@ fn remove_many() {
     }
 
     {
-        dom.mark_dirty(ScopeId(0));
+        dom.mark_dirty(ScopeId::ROOT);
         let edits = dom.render_immediate().santize();
         assert_eq!(
             edits.edits,
@@ -376,7 +378,7 @@ fn remove_many() {
     }
 
     {
-        dom.mark_dirty(ScopeId(0));
+        dom.mark_dirty(ScopeId::ROOT);
         let edits = dom.render_immediate().santize();
         assert_eq!(
             edits.edits,

@@ -1,3 +1,6 @@
+use dioxus_cli_config::Platform;
+use manganis_cli_support::AssetManifest;
+
 use super::*;
 use std::{fs::create_dir_all, io::Write, path::PathBuf};
 
@@ -11,7 +14,8 @@ pub struct Serve {
 
 impl Serve {
     pub async fn serve(self, bin: Option<PathBuf>) -> Result<()> {
-        let mut crate_config = crate::CrateConfig::new(bin)?;
+        let mut crate_config = dioxus_cli_config::CrateConfig::new(bin)?;
+        let serve_cfg = self.serve.clone();
 
         // change the relase state.
         crate_config.with_hot_reload(self.serve.hot_reload);
@@ -19,20 +23,23 @@ impl Serve {
         crate_config.with_release(self.serve.release);
         crate_config.with_verbose(self.serve.verbose);
 
-        if self.serve.example.is_some() {
-            crate_config.as_example(self.serve.example.unwrap());
+        if let Some(example) = self.serve.example {
+            crate_config.as_example(example);
         }
 
-        if self.serve.profile.is_some() {
-            crate_config.set_profile(self.serve.profile.unwrap());
+        if let Some(profile) = self.serve.profile {
+            crate_config.set_profile(profile);
         }
 
-        if self.serve.features.is_some() {
-            crate_config.set_features(self.serve.features.unwrap());
+        if let Some(features) = self.serve.features {
+            crate_config.set_features(features);
         }
 
-        // Subdirectories don't work with the server
-        crate_config.dioxus_config.web.app.base_path = None;
+        if let Some(target) = self.serve.target {
+            crate_config.set_target(target);
+        }
+
+        crate_config.set_cargo_args(self.serve.cargo_args);
 
         let platform = self
             .serve
@@ -40,32 +47,35 @@ impl Serve {
             .unwrap_or(crate_config.dioxus_config.application.default_platform);
 
         match platform {
-            cfg::Platform::Web => {
-                // generate dev-index page
-                Serve::regen_dev_page(&crate_config)?;
-
+            Platform::Web => {
                 // start the develop server
-                server::web::startup(self.serve.port, crate_config.clone(), self.serve.open)
-                    .await?;
+                server::web::startup(
+                    self.serve.port,
+                    crate_config.clone(),
+                    self.serve.open,
+                    self.serve.skip_assets,
+                )
+                .await?;
             }
-            cfg::Platform::Desktop => {
-                server::desktop::startup(crate_config.clone()).await?;
+            Platform::Desktop => {
+                server::desktop::startup(crate_config.clone(), &serve_cfg).await?;
+            }
+            Platform::Fullstack => {
+                server::fullstack::startup(crate_config.clone(), &serve_cfg).await?;
             }
         }
         Ok(())
     }
 
-    pub fn regen_dev_page(crate_config: &CrateConfig) -> Result<()> {
-        let serve_html = gen_page(&crate_config.dioxus_config, true);
+    pub fn regen_dev_page(
+        crate_config: &CrateConfig,
+        manifest: Option<&AssetManifest>,
+    ) -> anyhow::Result<()> {
+        let serve_html = gen_page(crate_config, manifest, true);
 
-        let dist_path = crate_config.crate_dir.join(
-            crate_config
-                .dioxus_config
-                .application
-                .out_dir
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("dist")),
-        );
+        let dist_path = crate_config
+            .crate_dir
+            .join(crate_config.dioxus_config.application.out_dir.clone());
         if !dist_path.is_dir() {
             create_dir_all(&dist_path)?;
         }

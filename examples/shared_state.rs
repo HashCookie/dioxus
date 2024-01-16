@@ -1,5 +1,3 @@
-#![allow(non_snake_case)]
-
 use std::collections::HashMap;
 
 use dioxus::prelude::*;
@@ -27,6 +25,7 @@ impl CoolData {
     }
 }
 
+#[component]
 #[rustfmt::skip]
 pub fn App(cx: Scope) -> Element {
     use_shared_state_provider(cx, || CoolData::new(HashMap::from([
@@ -50,28 +49,25 @@ pub fn App(cx: Scope) -> Element {
     )
 }
 
-#[inline_props]
+#[component]
 fn DataEditor(cx: Scope, id: usize) -> Element {
-    let cool_data = use_shared_state::<CoolData>(cx).unwrap().read();
+    let data = use_shared_state::<CoolData>(cx)?;
 
-    let my_data = &cool_data.view(id).unwrap();
-
-    render!(p {
-        "{my_data}"
-    })
+    render! {
+        p {
+            {data.read().view(id)?}
+        }
+    }
 }
 
-#[inline_props]
+#[component]
 fn DataView(cx: Scope, id: usize) -> Element {
-    let cool_data = use_shared_state::<CoolData>(cx).unwrap();
+    let data = use_shared_state::<CoolData>(cx)?;
 
-    let oninput = |e: FormEvent| cool_data.write().set(*id, e.value.clone());
-
-    let cool_data = cool_data.read();
-    let my_data = &cool_data.view(id).unwrap();
-
-    render!(input {
-        oninput: oninput,
-        value: "{my_data}"
-    })
+    render! {
+        input {
+            oninput: move |e: FormEvent| data.write().set(*id, e.value()),
+            value: data.read().view(id)?
+        }
+    }
 }

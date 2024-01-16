@@ -1,3 +1,7 @@
+#![doc = include_str!("../README.md")]
+#![doc(html_logo_url = "https://avatars.githubusercontent.com/u/79236386")]
+#![doc(html_favicon_url = "https://avatars.githubusercontent.com/u/79236386")]
+
 extern crate proc_macro;
 
 use layout::Layout;
@@ -32,7 +36,7 @@ mod segment;
 /// 1. Static Segments: "/static"
 /// 2. Dynamic Segments: "/:dynamic" (where dynamic has a type that is FromStr in all child Variants)
 /// 3. Catch all Segments: "/:..segments" (where segments has a type that is FromSegments in all child Variants)
-/// 4. Query Segments: "/?:query" (where query has a type that is FromQuery in all child Variants)
+/// 4. Query Segments: "/?:..query" (where query has a type that is FromQuery in all child Variants) or "/?:query&:other_query" (where query and other_query has a type that is FromQueryArgument in all child Variants)
 ///
 /// Routes are matched:
 /// 1. By there specificity this order: Query Routes ("/?:query"), Static Routes ("/route"), Dynamic Routes ("/:route"), Catch All Routes ("/:..route")
@@ -210,7 +214,7 @@ pub fn routable(input: TokenStream) -> TokenStream {
     let display_impl = route_enum.impl_display();
     let routable_impl = route_enum.routable_impl();
 
-    quote! {
+    (quote! {
         #error_type
 
         #display_impl
@@ -218,7 +222,7 @@ pub fn routable(input: TokenStream) -> TokenStream {
         #routable_impl
 
         #parse_impl
-    }
+    })
     .into()
 }
 
@@ -482,7 +486,8 @@ impl RouteEnum {
                     let route = s;
                     let (route, _hash) = route.split_once('#').unwrap_or((route, ""));
                     let (route, query) = route.split_once('?').unwrap_or((route, ""));
-                    let mut segments = route.split('/');
+                    let query = dioxus_router::exports::urlencoding::decode(query).unwrap_or(query.into());
+                    let mut segments = route.split('/').map(|s| dioxus_router::exports::urlencoding::decode(s).unwrap_or(s.into()));
                     // skip the first empty segment
                     if s.starts_with('/') {
                         let _ = segments.next();
@@ -677,9 +682,9 @@ impl ToTokens for SegmentType {
 impl<'a> From<&'a RouteSegment> for SegmentType {
     fn from(value: &'a RouteSegment) -> Self {
         match value {
-            segment::RouteSegment::Static(s) => SegmentType::Static(s.to_string()),
-            segment::RouteSegment::Dynamic(s, _) => SegmentType::Dynamic(s.to_string()),
-            segment::RouteSegment::CatchAll(s, _) => SegmentType::CatchAll(s.to_string()),
+            RouteSegment::Static(s) => SegmentType::Static(s.to_string()),
+            RouteSegment::Dynamic(s, _) => SegmentType::Dynamic(s.to_string()),
+            RouteSegment::CatchAll(s, _) => SegmentType::CatchAll(s.to_string()),
         }
     }
 }

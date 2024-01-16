@@ -17,7 +17,7 @@ fn keyed_diffing_out_of_order() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     {
@@ -39,7 +39,7 @@ fn keyed_diffing_out_of_order() {
         );
     }
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().edits,
         [
@@ -59,12 +59,12 @@ fn keyed_diffing_out_of_order_adds() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().edits,
         [
@@ -85,12 +85,12 @@ fn keyed_diffing_out_of_order_adds_3() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().edits,
         [
@@ -111,12 +111,12 @@ fn keyed_diffing_out_of_order_adds_4() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().edits,
         [
@@ -137,12 +137,12 @@ fn keyed_diffing_out_of_order_adds_5() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().edits,
         [
@@ -162,12 +162,12 @@ fn keyed_diffing_additions() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -187,12 +187,12 @@ fn keyed_diffing_additions_and_moves_on_ends() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -216,13 +216,13 @@ fn keyed_diffing_additions_and_moves_in_middle() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
     // LIS: 4, 5, 6
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -250,13 +250,13 @@ fn controlled_keyed_diffing_out_of_order() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
     // LIS: 5, 6
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -284,12 +284,12 @@ fn controlled_keyed_diffing_out_of_order_max_test() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -313,12 +313,12 @@ fn remove_list() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [
@@ -338,12 +338,12 @@ fn no_common_keys() {
             _ => unreachable!(),
         };
 
-        cx.render(rsx!(order.iter().map(|i| rsx!(div { key: "{i}" }))))
+        cx.render(rsx!({ order.iter().map(|i| rsx!(div { key: "{i}" })) }))
     });
 
     _ = dom.rebuild();
 
-    dom.mark_dirty(ScopeId(0));
+    dom.mark_dirty(ScopeId::ROOT);
     assert_eq!(
         dom.render_immediate().santize().edits,
         [

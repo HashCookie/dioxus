@@ -12,9 +12,11 @@ use serde::{de::DeserializeOwned, Serialize};
 /// use dioxus_fullstack::prelude::*;
 ///
 /// fn app(cx: Scope) -> Element {
-///    let state1 = use_state(cx, || from_server(|| {
+///    let state1 = server_cached(cx, || from_server(|| {
 ///       1234
 ///    }));
+///
+///    todo!()
 /// }
 /// ```
 pub fn server_cached<O: 'static + Serialize + DeserializeOwned>(server_fn: impl Fn() -> O) -> O {
@@ -23,7 +25,7 @@ pub fn server_cached<O: 'static + Serialize + DeserializeOwned>(server_fn: impl 
         let data = server_fn();
         let sc = crate::prelude::server_context();
         if let Err(err) = sc.push_html_data(&data) {
-            log::error!("Failed to push HTML data: {}", err);
+            tracing::error!("Failed to push HTML data: {}", err);
         }
         data
     }

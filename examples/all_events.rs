@@ -53,8 +53,7 @@ fn app(cx: Scope) -> Element {
     };
 
     cx.render(rsx! (
-        div {
-            style: "{CONTAINER_STYLE}",
+        div { style: "{CONTAINER_STYLE}",
             div {
                 style: "{RECT_STYLE}",
                 // focusing is necessary to catch keyboard events
@@ -62,7 +61,7 @@ fn app(cx: Scope) -> Element {
 
                 onmousemove: move |event| log_event(Event::MouseMove(event)),
                 onclick: move |event| log_event(Event::MouseClick(event)),
-                ondblclick: move |event| log_event(Event::MouseDoubleClick(event)),
+                ondoubleclick: move |event| log_event(Event::MouseDoubleClick(event)),
                 onmousedown: move |event| log_event(Event::MouseDown(event)),
                 onmouseup: move |event| log_event(Event::MouseUp(event)),
 
@@ -78,8 +77,10 @@ fn app(cx: Scope) -> Element {
                 "Hover, click, type or scroll to see the info down below"
             }
             div {
-                events.read().iter().map(|event| rsx!( div { "{event:?}" } ))
-            },
-        },
+                for event in events.read().iter() {
+                    div { "{event:?}" }
+                }
+            }
+        }
     ))
 }

@@ -1,5 +1,4 @@
 //! Tiny CRM: A port of the Yew CRM example to Dioxus.
-#![allow(non_snake_case)]
 use dioxus::prelude::*;
 use dioxus_router::prelude::*;
 
@@ -27,6 +26,7 @@ pub struct Client {
 
 type ClientContext = Vec<Client>;
 
+#[component]
 fn App(cx: Scope) -> Element {
     use_shared_state_provider::<ClientContext>(cx, Default::default);
 
@@ -35,14 +35,16 @@ fn App(cx: Scope) -> Element {
             rel: "stylesheet",
             href: "https://unpkg.com/purecss@2.0.6/build/pure-min.css",
             integrity: "sha384-Uu6IeWbM+gzNVXJcM9XV3SohHtmWE+3VGi496jvgX1jyvDTXfdK+rfZc8C1Aehk5",
-            crossorigin: "anonymous",
+            crossorigin: "anonymous"
         }
 
-        style { "
+        style {
+            "
             .red {{
                 background-color: rgb(202, 60, 60) !important;
             }}
-        " }
+        "
+        }
 
         h1 { "Dioxus CRM Example" }
 
@@ -50,25 +52,17 @@ fn App(cx: Scope) -> Element {
     }
 }
 
-#[inline_props]
+#[component]
 fn ClientList(cx: Scope) -> Element {
     let clients = use_shared_state::<ClientContext>(cx).unwrap();
 
     cx.render(rsx! {
         h2 { "List of Clients" }
 
-        Link {
-            to: Route::ClientAdd {},
-            class: "pure-button pure-button-primary",
-            "Add Client"
-        }
-        Link {
-            to: Route::Settings {},
-            class: "pure-button",
-            "Settings"
-        }
+        Link { to: Route::ClientAdd {}, class: "pure-button pure-button-primary", "Add Client" }
+        Link { to: Route::Settings {}, class: "pure-button", "Settings" }
 
-        clients.read().iter().map(|client| rsx! {
+        for client in clients.read().iter() {
             div {
                 class: "client",
                 style: "margin-bottom: 50px",
@@ -76,18 +70,16 @@ fn ClientList(cx: Scope) -> Element {
                 p { "Name: {client.first_name} {client.last_name}" }
                 p { "Description: {client.description}" }
             }
-        })
+        }
     })
 }
 
-#[inline_props]
+#[component]
 fn ClientAdd(cx: Scope) -> Element {
     let clients = use_shared_state::<ClientContext>(cx).unwrap();
     let first_name = use_state(cx, String::new);
     let last_name = use_state(cx, String::new);
     let description = use_state(cx, String::new);
-
-    let navigator = use_navigator(cx);
 
     cx.render(rsx! {
         h2 { "Add new Client" }
@@ -96,84 +88,60 @@ fn ClientAdd(cx: Scope) -> Element {
             class: "pure-form pure-form-aligned",
             onsubmit: move |_| {
                 let mut clients = clients.write();
-
-                clients.push(Client {
-                    first_name: first_name.to_string(),
-                    last_name: last_name.to_string(),
-                    description: description.to_string(),
-                });
-
-                navigator.push(Route::ClientList {});
+                clients
+                    .push(Client {
+                        first_name: first_name.to_string(),
+                        last_name: last_name.to_string(),
+                        description: description.to_string(),
+                    });
+                dioxus_router::router().push(Route::ClientList {});
             },
 
             fieldset {
-                div {
-                    class: "pure-control-group",
-                    label {
-                        "for": "first_name",
-                        "First Name"
-                    }
+                div { class: "pure-control-group",
+                    label { "for": "first_name", "First Name" }
                     input {
                         id: "first_name",
                         "type": "text",
                         placeholder: "First Name…",
                         required: "",
                         value: "{first_name}",
-                        oninput: move |e| first_name.set(e.value.clone())
+                        oninput: move |e| first_name.set(e.value())
                     }
                 }
 
-                div {
-                    class: "pure-control-group",
-                    label {
-                        "for": "last_name",
-                        "Last Name"
-                    }
+                div { class: "pure-control-group",
+                    label { "for": "last_name", "Last Name" }
                     input {
                         id: "last_name",
                         "type": "text",
                         placeholder: "Last Name…",
                         required: "",
                         value: "{last_name}",
-                        oninput: move |e| last_name.set(e.value.clone())
+                        oninput: move |e| last_name.set(e.value())
                     }
                 }
 
-                div {
-                    class: "pure-control-group",
-                    label {
-                        "for": "description",
-                        "Description"
-                    }
+                div { class: "pure-control-group",
+                    label { "for": "description", "Description" }
                     textarea {
                         id: "description",
                         placeholder: "Description…",
                         value: "{description}",
-                        oninput: move |e| description.set(e.value.clone())
+                        oninput: move |e| description.set(e.value())
                     }
                 }
 
-                div {
-                    class: "pure-controls",
-                    button {
-                        "type": "submit",
-                        class: "pure-button pure-button-primary",
-                        "Save"
-                    }
-                    Link {
-                        to: Route::ClientList {},
-                        class: "pure-button pure-button-primary red",
-                        "Cancel"
-                    }
+                div { class: "pure-controls",
+                    button { "type": "submit", class: "pure-button pure-button-primary", "Save" }
+                    Link { to: Route::ClientList {}, class: "pure-button pure-button-primary red", "Cancel" }
                 }
             }
-
-
         }
     })
 }
 
-#[inline_props]
+#[component]
 fn Settings(cx: Scope) -> Element {
     let clients = use_shared_state::<ClientContext>(cx).unwrap();
 
@@ -189,10 +157,6 @@ fn Settings(cx: Scope) -> Element {
             "Remove all Clients"
         }
 
-        Link {
-            to: Route::ClientList {},
-            class: "pure-button",
-            "Go back"
-        }
+        Link { to: Route::ClientList {}, class: "pure-button", "Go back" }
     })
 }

@@ -1,12 +1,15 @@
 use crate::{
-    config::{CrateConfig, ExecutableType},
+    assets::{asset_manifest, create_assets_head, process_assets, WebAssetConfigDropGuard},
     error::{Error, Result},
     tools::Tool,
-    DioxusConfig,
 };
 use cargo_metadata::{diagnostic::Diagnostic, Message};
+use dioxus_cli_config::crate_root;
+use dioxus_cli_config::CrateConfig;
+use dioxus_cli_config::ExecutableType;
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::Serialize;
+use lazy_static::lazy_static;
+use manganis_cli_support::{AssetManifest, ManganisSupportGuard};
 use std::{
     fs::{copy, create_dir_all, File},
     io::Read,
@@ -16,16 +19,21 @@ use std::{
 };
 use wasm_bindgen_cli_support::Bindgen;
 
-#[derive(Serialize, Debug, Clone)]
+lazy_static! {
+    static ref PROGRESS_BARS: indicatif::MultiProgress = indicatif::MultiProgress::new();
+}
+
+#[derive(Debug, Clone)]
 pub struct BuildResult {
     pub warnings: Vec<Diagnostic>,
     pub elapsed_time: u128,
+    pub assets: Option<AssetManifest>,
 }
 
-pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
+pub fn build(config: &CrateConfig, _: bool, skip_assets: bool) -> Result<BuildResult> {
     // [1] Build the project with cargo, generating a wasm32-unknown-unknown target (is there a more specific, better target to leverage?)
     // [2] Generate the appropriate build folders
-    // [3] Wasm-bindgen the .wasm fiile, and move it into the {builddir}/modules/xxxx/xxxx_bg.wasm
+    // [3] Wasm-bindgen the .wasm file, and move it into the {builddir}/modules/xxxx/xxxx_bg.wasm
     // [4] Wasm-opt the .wasm file with whatever optimizations need to be done
     // [5][OPTIONAL] Builds the Tailwind CSS file using the Tailwind standalone binary
     // [6] Link up the html page to the wasm module
@@ -40,15 +48,31 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
         ..
     } = config;
 
+    let _guard = WebAssetConfigDropGuard::new();
+    let _manganis_support = ManganisSupportGuard::default();
+
     // start to build the assets
     let ignore_files = build_assets(config)?;
 
     let t_start = std::time::Instant::now();
+    let _guard = dioxus_cli_config::__private::save_config(config);
 
     // [1] Build the .wasm module
     log::info!("🚅 Running build command...");
-    let cmd = subprocess::Exec::cmd("cargo");
-    let cmd = cmd
+
+    let wasm_check_command = std::process::Command::new("rustup")
+        .args(["show"])
+        .output()?;
+    let wasm_check_output = String::from_utf8(wasm_check_command.stdout).unwrap();
+    if !wasm_check_output.contains("wasm32-unknown-unknown") {
+        log::info!("wasm32-unknown-unknown target not detected, installing..");
+        let _ = std::process::Command::new("rustup")
+            .args(["target", "add", "wasm32-unknown-unknown"])
+            .output()?;
+    }
+
+    let cmd = subprocess::Exec::cmd("cargo")
+        .env("CARGO_TARGET_DIR", target_dir)
         .cwd(crate_dir)
         .arg("build")
         .arg("--target")
@@ -63,10 +87,8 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
     let cmd = if config.verbose {
         cmd.arg("--verbose")
     } else {
-        cmd
+        cmd.arg("--quiet")
     };
-
-    let cmd = if quiet { cmd.arg("--quiet") } else { cmd };
 
     let cmd = if config.custom_profile.is_some() {
         let custom_profile = config.custom_profile.as_ref().unwrap();
@@ -82,6 +104,8 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
         cmd
     };
 
+    let cmd = cmd.args(&config.cargo_args);
+
     let cmd = match executable {
         ExecutableType::Binary(name) => cmd.arg("--bin").arg(name),
         ExecutableType::Lib(name) => cmd.arg("--lib").arg(name),
@@ -93,8 +117,13 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
     // [2] Establish the output directory structure
     let bindgen_outdir = out_dir.join("assets").join("dioxus");
 
-    let build_profile = if config.custom_profile.is_some() {
-        config.custom_profile.as_ref().unwrap()
+    let build_target = if config.custom_profile.is_some() {
+        let build_profile = config.custom_profile.as_ref().unwrap();
+        if build_profile == "dev" {
+            "debug"
+        } else {
+            build_profile
+        }
     } else if config.release {
         "release"
     } else {
@@ -103,11 +132,11 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
 
     let input_path = match executable {
         ExecutableType::Binary(name) | ExecutableType::Lib(name) => target_dir
-            .join(format!("wasm32-unknown-unknown/{}", build_profile))
+            .join(format!("wasm32-unknown-unknown/{}", build_target))
             .join(format!("{}.wasm", name)),
 
         ExecutableType::Example(name) => target_dir
-            .join(format!("wasm32-unknown-unknown/{}/examples", build_profile))
+            .join(format!("wasm32-unknown-unknown/{}/examples", build_target))
             .join(format!("{}.wasm", name)),
     };
 
@@ -133,7 +162,7 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
     }
 
     // check binaryen:wasm-opt tool
-    let dioxus_tools = dioxus_config.application.tools.clone().unwrap_or_default();
+    let dioxus_tools = dioxus_config.application.tools.clone();
     if dioxus_tools.contains_key("binaryen") {
         let info = dioxus_tools.get("binaryen").unwrap();
         let binaryen = crate::tools::Tool::Binaryen;
@@ -239,19 +268,35 @@ pub fn build(config: &CrateConfig, quiet: bool) -> Result<BuildResult> {
         }
     }
 
+    let assets = if !skip_assets {
+        let assets = asset_manifest(config);
+        process_assets(config, &assets)?;
+        Some(assets)
+    } else {
+        None
+    };
+
     Ok(BuildResult {
         warnings: warning_messages,
         elapsed_time: t_start.elapsed().as_millis(),
+        assets,
     })
 }
 
-pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResult> {
+pub fn build_desktop(
+    config: &CrateConfig,
+    _is_serve: bool,
+    skip_assets: bool,
+) -> Result<BuildResult> {
     log::info!("🚅 Running build [Desktop] command...");
 
     let t_start = std::time::Instant::now();
     let ignore_files = build_assets(config)?;
+    let _guard = dioxus_cli_config::__private::save_config(config);
+    let _manganis_support = ManganisSupportGuard::default();
 
     let mut cmd = subprocess::Exec::cmd("cargo")
+        .env("CARGO_TARGET_DIR", &config.target_dir)
         .cwd(&config.crate_dir)
         .arg("build")
         .arg("--message-format=json");
@@ -261,6 +306,8 @@ pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResul
     }
     if config.verbose {
         cmd = cmd.arg("--verbose");
+    } else {
+        cmd = cmd.arg("--quiet");
     }
 
     if config.custom_profile.is_some() {
@@ -273,10 +320,18 @@ pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResul
         cmd = cmd.arg("--features").arg(features_str);
     }
 
+    if let Some(target) = &config.target {
+        cmd = cmd.arg("--target").arg(target);
+    }
+
+    let target_platform = config.target.as_deref().unwrap_or("");
+
+    cmd = cmd.args(&config.cargo_args);
+
     let cmd = match &config.executable {
-        crate::ExecutableType::Binary(name) => cmd.arg("--bin").arg(name),
-        crate::ExecutableType::Lib(name) => cmd.arg("--lib").arg(name),
-        crate::ExecutableType::Example(name) => cmd.arg("--example").arg(name),
+        ExecutableType::Binary(name) => cmd.arg("--bin").arg(name),
+        ExecutableType::Lib(name) => cmd.arg("--lib").arg(name),
+        ExecutableType::Example(name) => cmd.arg("--example").arg(name),
     };
 
     let warning_messages = prettier_build(cmd)?;
@@ -288,14 +343,19 @@ pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResul
 
     let file_name: String;
     let mut res_path = match &config.executable {
-        crate::ExecutableType::Binary(name) | crate::ExecutableType::Lib(name) => {
-            file_name = name.clone();
-            config.target_dir.join(release_type).join(name)
-        }
-        crate::ExecutableType::Example(name) => {
+        ExecutableType::Binary(name) | ExecutableType::Lib(name) => {
             file_name = name.clone();
             config
                 .target_dir
+                .join(target_platform)
+                .join(release_type)
+                .join(name)
+        }
+        ExecutableType::Example(name) => {
+            file_name = name.clone();
+            config
+                .target_dir
+                .join(target_platform)
                 .join(release_type)
                 .join("examples")
                 .join(name)
@@ -312,7 +372,7 @@ pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResul
     if !config.out_dir.is_dir() {
         create_dir_all(&config.out_dir)?;
     }
-    copy(res_path, &config.out_dir.join(target_file))?;
+    copy(res_path, config.out_dir.join(target_file))?;
 
     // this code will copy all public file to the output dir
     if config.asset_dir.is_dir() {
@@ -347,15 +407,20 @@ pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResul
         }
     }
 
+    let assets = if !skip_assets {
+        let assets = asset_manifest(config);
+        // Collect assets
+        process_assets(config, &assets)?;
+        // Create the __assets_head.html file for bundling
+        create_assets_head(config, &assets)?;
+        Some(assets)
+    } else {
+        None
+    };
+
     log::info!(
         "🚩 Build completed: [./{}]",
-        config
-            .dioxus_config
-            .application
-            .out_dir
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("dist"))
-            .display()
+        config.dioxus_config.application.out_dir.clone().display()
     );
 
     println!("build desktop done");
@@ -363,14 +428,16 @@ pub fn build_desktop(config: &CrateConfig, _is_serve: bool) -> Result<BuildResul
     Ok(BuildResult {
         warnings: warning_messages,
         elapsed_time: t_start.elapsed().as_millis(),
+        assets,
     })
 }
 
 fn prettier_build(cmd: subprocess::Exec) -> anyhow::Result<Vec<Diagnostic>> {
     let mut warning_messages: Vec<Diagnostic> = vec![];
 
-    let pb = ProgressBar::new_spinner();
+    let mut pb = ProgressBar::new_spinner();
     pb.enable_steady_tick(Duration::from_millis(200));
+    pb = PROGRESS_BARS.add(pb);
     pb.set_style(
         ProgressStyle::with_template("{spinner:.dim.bold} {wide_msg}")
             .unwrap()
@@ -378,18 +445,9 @@ fn prettier_build(cmd: subprocess::Exec) -> anyhow::Result<Vec<Diagnostic>> {
     );
     pb.set_message("💼 Waiting to start build the project...");
 
-    struct StopSpinOnDrop(ProgressBar);
-
-    impl Drop for StopSpinOnDrop {
-        fn drop(&mut self) {
-            self.0.finish_and_clear();
-        }
-    }
-
-    StopSpinOnDrop(pb.clone());
-
     let stdout = cmd.detached().stream_stdout()?;
     let reader = std::io::BufReader::new(stdout);
+
     for message in cargo_metadata::Message::parse_stream(reader) {
         match message.unwrap() {
             Message::CompilerMessage(msg) => {
@@ -409,7 +467,7 @@ fn prettier_build(cmd: subprocess::Exec) -> anyhow::Result<Vec<Diagnostic>> {
                 }
             }
             Message::CompilerArtifact(artifact) => {
-                pb.set_message(format!("Compiling {} ", artifact.package_id));
+                pb.set_message(format!("⚙️ Compiling {} ", artifact.package_id));
                 pb.tick();
             }
             Message::BuildScriptExecuted(script) => {
@@ -422,14 +480,18 @@ fn prettier_build(cmd: subprocess::Exec) -> anyhow::Result<Vec<Diagnostic>> {
                     std::process::exit(1);
                 }
             }
-            _ => (), // Unknown message
+            _ => {
+                // Unknown message
+            }
         }
     }
     Ok(warning_messages)
 }
 
-pub fn gen_page(config: &DioxusConfig, serve: bool) -> String {
-    let crate_root = crate::cargo::crate_root().unwrap();
+pub fn gen_page(config: &CrateConfig, manifest: Option<&AssetManifest>, serve: bool) -> String {
+    let _gaurd = WebAssetConfigDropGuard::new();
+
+    let crate_root = crate_root().unwrap();
     let custom_html_file = crate_root.join("index.html");
     let mut html = if custom_html_file.is_file() {
         let mut buf = String::new();
@@ -443,14 +505,14 @@ pub fn gen_page(config: &DioxusConfig, serve: bool) -> String {
         String::from(include_str!("./assets/index.html"))
     };
 
-    let resouces = config.web.resource.clone();
+    let resources = config.dioxus_config.web.resource.clone();
 
-    let mut style_list = resouces.style.unwrap_or_default();
-    let mut script_list = resouces.script.unwrap_or_default();
+    let mut style_list = resources.style.unwrap_or_default();
+    let mut script_list = resources.script.unwrap_or_default();
 
     if serve {
-        let mut dev_style = resouces.dev.style.clone().unwrap_or_default();
-        let mut dev_script = resouces.dev.script.unwrap_or_default();
+        let mut dev_style = resources.dev.style.clone();
+        let mut dev_script = resources.dev.script.clone();
         style_list.append(&mut dev_style);
         script_list.append(&mut dev_script);
     }
@@ -463,13 +525,16 @@ pub fn gen_page(config: &DioxusConfig, serve: bool) -> String {
         ))
     }
     if config
+        .dioxus_config
         .application
         .tools
         .clone()
-        .unwrap_or_default()
         .contains_key("tailwindcss")
     {
-        style_str.push_str("<link rel=\"stylesheet\" href=\"tailwind.css\">\n");
+        style_str.push_str("<link rel=\"stylesheet\" href=\"/{base_path}/tailwind.css\">\n");
+    }
+    if let Some(manifest) = manifest {
+        style_str.push_str(&manifest.head());
     }
 
     replace_or_insert_before("{style_include}", &style_str, "</head", &mut html);
@@ -491,11 +556,11 @@ pub fn gen_page(config: &DioxusConfig, serve: bool) -> String {
         );
     }
 
-    let base_path = match &config.web.app.base_path {
+    let base_path = match &config.dioxus_config.web.app.base_path {
         Some(path) => path,
         None => ".",
     };
-    let app_name = &config.application.name;
+    let app_name = &config.dioxus_config.application.name;
     // Check if a script already exists
     if html.contains("{app_name}") && html.contains("{base_path}") {
         html = html.replace("{app_name}", app_name);
@@ -519,12 +584,7 @@ pub fn gen_page(config: &DioxusConfig, serve: bool) -> String {
         );
     }
 
-    let title = config
-        .web
-        .app
-        .title
-        .clone()
-        .unwrap_or_else(|| "dioxus | ⛺".into());
+    let title = config.dioxus_config.web.app.title.clone();
 
     replace_or_insert_before("{app_title}", &title, "</title", &mut html);
 
@@ -551,7 +611,7 @@ fn build_assets(config: &CrateConfig) -> Result<Vec<PathBuf>> {
     let mut result = vec![];
 
     let dioxus_config = &config.dioxus_config;
-    let dioxus_tools = dioxus_config.application.tools.clone().unwrap_or_default();
+    let dioxus_tools = dioxus_config.application.tools.clone();
 
     // check sass tool state
     let sass = Tool::Sass;
@@ -689,35 +749,3 @@ fn build_assets(config: &CrateConfig) -> Result<Vec<PathBuf>> {
 
     Ok(result)
 }
-
-// use binary_install::{Cache, Download};
-
-// /// Attempts to find `wasm-opt` in `PATH` locally, or failing that downloads a
-// /// precompiled binary.
-// ///
-// /// Returns `Some` if a binary was found or it was successfully downloaded.
-// /// Returns `None` if a binary wasn't found in `PATH` and this platform doesn't
-// /// have precompiled binaries. Returns an error if we failed to download the
-// /// binary.
-// pub fn find_wasm_opt(
-//     cache: &Cache,
-//     install_permitted: bool,
-// ) -> Result<install::Status, failure::Error> {
-//     // First attempt to look up in PATH. If found assume it works.
-//     if let Ok(path) = which::which("wasm-opt") {
-//         PBAR.info(&format!("found wasm-opt at {:?}", path));
-
-//         match path.as_path().parent() {
-//             Some(path) => return Ok(install::Status::Found(Download::at(path))),
-//             None => {}
-//         }
-//     }
-
-//     let version = "version_78";
-//     Ok(install::download_prebuilt(
-//         &install::Tool::WasmOpt,
-//         cache,
-//         version,
-//         install_permitted,
-//     )?)
-// }

@@ -3,7 +3,7 @@ use syn::{Ident, Type};
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 
-use crate::query::QuerySegment;
+use crate::query::{FullQuerySegment, QueryArgument, QuerySegment};
 
 #[derive(Debug, Clone)]
 pub enum RouteSegment {
@@ -25,7 +25,7 @@ impl RouteSegment {
         match self {
             Self::Static(segment) => quote! { write!(f, "/{}", #segment)?; },
             Self::Dynamic(ident, _) => quote! { write!(f, "/{}", #ident)?; },
-            Self::CatchAll(ident, _) => quote! { #ident.display_route_segements(f)?; },
+            Self::CatchAll(ident, _) => quote! { #ident.display_route_segments(f)?; },
         }
     }
 
@@ -59,6 +59,7 @@ impl RouteSegment {
                     {
                         let mut segments = segments.clone();
                         let segment = segments.next();
+                        let segment = segment.as_deref();
                         let parsed = if let Some(#segment) = segment {
                             Ok(())
                         } else {
@@ -80,7 +81,8 @@ impl RouteSegment {
                 quote! {
                     {
                         let mut segments = segments.clone();
-                        let parsed = if let Some(segment) = segments.next() {
+                        let segment = segments.next();
+                        let parsed = if let Some(segment) = segment.as_deref() {
                             <#ty as dioxus_router::routable::FromRouteSegment>::from_route_segment(segment).map_err(|err| #error_enum_name::#error_enum_varient(#inner_parse_enum::#error_name(err)))
                         } else {
                             Err(#error_enum_name::#error_enum_varient(#inner_parse_enum::#missing_error_name))
@@ -100,9 +102,12 @@ impl RouteSegment {
                 quote! {
                     {
                         let parsed = {
-                            let mut segments = segments.clone();
-                            let segments: Vec<_> = segments.collect();
-                            <#ty as dioxus_router::routable::FromRouteSegments>::from_route_segments(&segments).map_err(|err| #error_enum_name::#error_enum_varient(#inner_parse_enum::#error_name(err)))
+                            let remaining_segments: Vec<_> = segments.collect();
+                            let mut new_segments: Vec<&str> = Vec::new();
+                            for segment in &remaining_segments {
+                                new_segments.push(&*segment);
+                            }
+                            <#ty as dioxus_router::routable::FromRouteSegments>::from_route_segments(&new_segments).map_err(|err| #error_enum_name::#error_enum_varient(#inner_parse_enum::#error_name(err)))
                         };
                         match parsed {
                             Ok(#name) => {
@@ -196,7 +201,7 @@ pub fn parse_route_segments<'a>(
     // check if the route has a query string
     let parsed_query = match query {
         Some(query) => {
-            if let Some(query) = query.strip_prefix(':') {
+            if let Some(query) = query.strip_prefix(":..") {
                 let query_ident = Ident::new(query, Span::call_site());
                 let field = fields.find(|(name, _)| *name == &query_ident);
 
@@ -209,12 +214,44 @@ pub fn parse_route_segments<'a>(
                     ));
                 };
 
-                Some(QuerySegment {
+                Some(QuerySegment::Single(FullQuerySegment {
                     ident: query_ident,
                     ty,
-                })
+                }))
             } else {
-                None
+                let mut query_arguments = Vec::new();
+                for segment in query.split('&') {
+                    if segment.is_empty() {
+                        return Err(syn::Error::new(
+                            route_span,
+                            "Query segments should be non-empty",
+                        ));
+                    }
+                    if let Some(query_argument) = segment.strip_prefix(':') {
+                        let query_ident = Ident::new(query_argument, Span::call_site());
+                        let field = fields.find(|(name, _)| *name == &query_ident);
+
+                        let ty = if let Some((_, ty)) = field {
+                            ty.clone()
+                        } else {
+                            return Err(syn::Error::new(
+                                route_span,
+                                format!("Could not find a field with the name '{}'", query_ident),
+                            ));
+                        };
+
+                        query_arguments.push(QueryArgument {
+                            ident: query_ident,
+                            ty,
+                        });
+                    } else {
+                        return Err(syn::Error::new(
+                            route_span,
+                            "Query segments should be a : followed by the name of the query argument",
+                        ));
+                    }
+                }
+                Some(QuerySegment::Segments(query_arguments))
             }
         }
         None => None,

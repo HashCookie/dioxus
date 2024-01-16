@@ -41,7 +41,8 @@ where
     .flatten()
 }
 
-pub(crate) struct Runtime {
+/// A global runtime that is shared across all scopes that provides the async runtime and context API
+pub struct Runtime {
     pub(crate) scope_contexts: RefCell<Vec<Option<ScopeContext>>>,
     pub(crate) scheduler: Rc<Scheduler>,
 
@@ -63,6 +64,11 @@ impl Runtime {
         })
     }
 
+    /// Get the current runtime
+    pub fn current() -> Option<Rc<Self>> {
+        RUNTIMES.with(|stack| stack.borrow().last().cloned())
+    }
+
     /// Create a scope context. This slab is synchronized with the scope slab.
     pub(crate) fn create_context_at(&self, id: ScopeId, context: ScopeContext) {
         let mut contexts = self.scope_contexts.borrow_mut();
@@ -77,14 +83,24 @@ impl Runtime {
     }
 
     /// Get the current scope id
-    pub fn current_scope_id(&self) -> Option<ScopeId> {
+    pub(crate) fn current_scope_id(&self) -> Option<ScopeId> {
         self.scope_stack.borrow().last().copied()
+    }
+
+    /// Call this function with the current scope set to the given scope
+    ///
+    /// Useful in a limited number of scenarios, not public.
+    pub(crate) fn with_scope<O>(&self, id: ScopeId, f: impl FnOnce() -> O) -> O {
+        self.scope_stack.borrow_mut().push(id);
+        let o = f();
+        self.scope_stack.borrow_mut().pop();
+        o
     }
 
     /// Get the context for any scope given its ID
     ///
     /// This is useful for inserting or removing contexts from a scope, or rendering out its root node
-    pub fn get_context(&self, id: ScopeId) -> Option<Ref<'_, ScopeContext>> {
+    pub(crate) fn get_context(&self, id: ScopeId) -> Option<Ref<'_, ScopeContext>> {
         Ref::filter_map(self.scope_contexts.borrow(), |contexts| {
             contexts.get(id.0).and_then(|f| f.as_ref())
         })
@@ -92,12 +108,56 @@ impl Runtime {
     }
 }
 
-pub(crate) struct RuntimeGuard(Rc<Runtime>);
+/// A guard for a new runtime. This must be used to override the current runtime when importing components from a dynamic library that has it's own runtime.
+///
+/// ```rust
+/// use dioxus::prelude::*;
+///
+/// fn main() {
+///     let virtual_dom = VirtualDom::new(app);
+/// }
+///
+/// fn app(cx: Scope) -> Element {
+///     render!{ Component { runtime: Runtime::current().unwrap() } }
+/// }
+///
+/// // In a dynamic library
+/// #[derive(Props)]
+/// struct ComponentProps {
+///    runtime: std::rc::Rc<Runtime>,
+/// }
+///
+/// impl PartialEq for ComponentProps {
+///     fn eq(&self, _other: &Self) -> bool {
+///         true
+///     }
+/// }
+///
+/// # #[allow(non_snake_case)]
+/// fn Component(cx: Scope<ComponentProps>) -> Element {
+///     cx.use_hook(|| RuntimeGuard::new(cx.props.runtime.clone()));
+///
+///     render! { div {} }
+/// }
+/// ```
+pub struct RuntimeGuard(Rc<Runtime>);
 
 impl RuntimeGuard {
-    pub(crate) fn new(runtime: Rc<Runtime>) -> Self {
+    /// Create a new runtime guard that sets the current Dioxus runtime. The runtime will be reset when the guard is dropped
+    pub fn new(runtime: Rc<Runtime>) -> Self {
         push_runtime(runtime.clone());
         Self(runtime)
+    }
+
+    /// Run a function with a given runtime and scope in context
+    pub fn with<O>(runtime: Rc<Runtime>, scope: Option<ScopeId>, f: impl FnOnce() -> O) -> O {
+        let guard = Self::new(runtime.clone());
+        let o = match scope {
+            Some(scope) => Runtime::with_scope(&runtime, scope, f),
+            None => f(),
+        };
+        drop(guard);
+        o
     }
 }
 
