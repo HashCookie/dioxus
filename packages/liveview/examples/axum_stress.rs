@@ -1,25 +1,22 @@
 use axum::{extract::ws::WebSocketUpgrade, response::Html, routing::get, Router};
 use dioxus::prelude::*;
 
-fn app(cx: Scope) -> Element {
-    let state = use_state(cx, || 0);
-    use_future(cx, (), |_| {
-        to_owned![state];
-        async move {
-            loop {
-                state += 1;
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
+fn app() -> Element {
+    let mut state = use_signal(|| 0);
+    use_future(move || async move {
+        loop {
+            state += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     });
 
-    cx.render(rsx! {
+    rsx! {
         for _ in 0..10000 {
             div {
                 "hello axum! {state}"
             }
         }
-    })
+    }
 }
 
 #[tokio::main]
@@ -58,8 +55,8 @@ async fn main() {
 
     println!("Listening on http://{addr}");
 
-    axum::Server::bind(&addr.to_string().parse().unwrap())
-        .serve(app.into_make_service())
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    axum::serve(listener, app.into_make_service())
         .await
         .unwrap();
 }

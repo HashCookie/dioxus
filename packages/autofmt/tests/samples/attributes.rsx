@@ -1,6 +1,6 @@
 rsx! {
     div {
-        key: "ddd",
+        key: "{ddd}",
         class: "asd",
         class: "asd",
         class: "asd",
@@ -16,8 +16,8 @@ rsx! {
             div { "hi" }
             h2 { class: "asd" }
         }
+        Component::<Generic> {}
         Component {}
-        Component<Generic> {}
     }
 
     // Long attributes

@@ -34,8 +34,8 @@ fn main() {
     dioxus_desktop::launch(app);
 }
 
-fn app(cx: Scope) -> Element {
-    cx.render(rsx!{
+fn app() -> Element {
+    rsx!{
         div {
             "hello world!"
         }
@@ -47,4 +47,4 @@ To configure the webview, menubar, and other important desktop-specific features
 
 ## Future Steps
 
-Make sure to read the [Dioxus Guide](https://dioxuslabs.com/learn/0.4/) if you already haven't!
+Make sure to read the [Dioxus Guide](https://dioxuslabs.com/learn/0.5/) if you already haven't!

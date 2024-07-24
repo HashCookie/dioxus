@@ -2,14 +2,10 @@
 #![doc(html_logo_url = "https://avatars.githubusercontent.com/u/79236386")]
 #![doc(html_favicon_url = "https://avatars.githubusercontent.com/u/79236386")]
 
-pub const DIOXUS_CLI_VERSION: &str = "0.4.1";
-
-mod assets;
-pub mod builder;
-pub mod server;
+pub mod assets;
+pub mod dx_build_info;
+pub mod serve;
 pub mod tools;
-
-pub use builder::*;
 
 pub mod cli;
 pub use cli::*;
@@ -17,8 +13,12 @@ pub use cli::*;
 pub mod error;
 pub use error::*;
 
-pub mod logging;
-pub use logging::*;
+pub(crate) mod builder;
 
-#[cfg(feature = "plugin")]
-pub mod plugin;
+mod dioxus_crate;
+pub use dioxus_crate::*;
+
+mod settings;
+pub(crate) use settings::*;
+
+pub(crate) mod metadata;

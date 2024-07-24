@@ -15,7 +15,7 @@
 [discord-url]: https://discord.gg/XgGxMSkvUM
 
 [Website](https://dioxuslabs.com) |
-[Guides](https://dioxuslabs.com/learn/0.4/) |
+[Guides](https://dioxuslabs.com/learn/0.5/) |
 [API Docs](https://docs.rs/dioxus-liveview/latest/dioxus_liveview) |
 [Chat](https://discord.gg/XgGxMSkvUM)
 
@@ -26,9 +26,6 @@
 The current backend frameworks supported include:
 
 - Axum
-- Warp
-- Salvo
-- Rocket
 
 Dioxus-LiveView exports some primitives to wire up an app into an existing backend framework.
 

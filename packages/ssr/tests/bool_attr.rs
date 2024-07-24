@@ -1,16 +1,16 @@
 use dioxus::prelude::*;
 
 #[test]
-fn static_boolean_attributs() {
-    fn app(cx: Scope) -> Element {
-        render! {
+fn static_boolean_attributes() {
+    fn app() -> Element {
+        rsx! {
             div { hidden: "false" }
             div { hidden: "true" }
         }
     }
 
     let mut dom = VirtualDom::new(app);
-    _ = dom.rebuild();
+    dom.rebuild(&mut dioxus_core::NoOpMutations);
 
     assert_eq!(
         dioxus_ssr::render(&dom),
@@ -19,16 +19,16 @@ fn static_boolean_attributs() {
 }
 
 #[test]
-fn dynamic_boolean_attributs() {
-    fn app(cx: Scope) -> Element {
-        render! {
+fn dynamic_boolean_attributes() {
+    fn app() -> Element {
+        rsx! {
             div { hidden: false }
             div { hidden: true }
         }
     }
 
     let mut dom = VirtualDom::new(app);
-    _ = dom.rebuild();
+    dom.rebuild(&mut dioxus_core::NoOpMutations);
 
     assert_eq!(
         dioxus_ssr::render(&dom),

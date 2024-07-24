@@ -14,7 +14,6 @@ pub fn impl_extension_attributes(input: TokenStream) -> TokenStream {
 }
 
 struct ImplExtensionAttributes {
-    is_element: bool,
     name: Ident,
     attrs: Punctuated<Ident, Token![,]>,
 }
@@ -23,16 +22,11 @@ impl Parse for ImplExtensionAttributes {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let content;
 
-        let element: Ident = input.parse()?;
         let name = input.parse()?;
         braced!(content in input);
         let attrs = content.parse_terminated(Ident::parse, Token![,])?;
 
-        Ok(ImplExtensionAttributes {
-            is_element: element == "ELEMENT",
-            name,
-            attrs,
-        })
+        Ok(ImplExtensionAttributes { name, attrs })
     }
 }
 
@@ -44,31 +38,19 @@ impl ToTokens for ImplExtensionAttributes {
             .strip_prefix("r#")
             .unwrap_or(&name_string)
             .to_case(Case::UpperCamel);
-        let impl_name = Ident::new(format!("{}Impl", &camel_name).as_str(), name.span());
         let extension_name = Ident::new(format!("{}Extension", &camel_name).as_str(), name.span());
 
-        if !self.is_element {
-            tokens.append_all(quote! {
-                struct #impl_name;
-                impl #name for #impl_name {}
-            });
-        }
-
         let impls = self.attrs.iter().map(|ident| {
-            let d = if self.is_element {
-                quote! { #name::#ident }
-            } else {
-                quote! { <#impl_name as #name>::#ident }
-            };
+            let d = quote! { #name::#ident };
             quote! {
-                fn #ident(self, value: impl IntoAttributeValue<'a>) -> Self {
+                fn #ident(self, value: impl IntoAttributeValue) -> Self {
                     let d = #d;
                     self.push_attribute(d.0, d.1, value, d.2)
                 }
             }
         });
         tokens.append_all(quote! {
-            pub trait #extension_name<'a>: HasAttributes<'a> + Sized {
+            pub trait #extension_name: HasAttributes + Sized {
                 #(#impls)*
             }
         });

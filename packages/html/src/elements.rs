@@ -8,44 +8,153 @@ use dioxus_rsx::HotReloadingContext;
 
 #[cfg(feature = "hot-reload-context")]
 use crate::{map_global_attributes, map_svg_attributes};
-use crate::{GlobalAttributes, SvgAttributes};
 
-pub type AttributeDiscription = (&'static str, Option<&'static str>, bool);
+pub type AttributeDescription = (&'static str, Option<&'static str>, bool);
 
 macro_rules! impl_attribute {
     (
-        $(#[$attr_method:meta])*
-        $fil:ident: $vil:ident (DEFAULT),
+        $element:ident {
+            $(#[$attr_method:meta])*
+            $fil:ident: $vil:ident (DEFAULT),
+        }
     ) => {
-        pub const $fil: AttributeDiscription = (stringify!($fil), None, false);
+        $(#[$attr_method])*
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        #[doc = concat!("let ", stringify!($fil), " = \"value\";")]
+        ///
+        /// rsx! {
+        ///     // Attributes need to be under the element they modify
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Attributes are followed by a colon and then the value of the attribute
+        #[doc = concat!("        ", stringify!($fil), ": \"value\"")]
+        ///     }
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Or you can use the shorthand syntax if you have a variable in scope that has the same name as the attribute
+        #[doc = concat!("        ", stringify!($fil), ",")]
+        ///     }
+        /// };
+        /// ```
+        pub const $fil: AttributeDescription = (stringify!($fil), None, false);
     };
 
     (
-        $(#[$attr_method:meta])*
-        $fil:ident: $vil:ident ($name:literal),
+        $element:ident {
+            $(#[$attr_method:meta])*
+            $fil:ident: $vil:ident ($name:literal),
+        }
     ) => {
-        pub const $fil: AttributeDiscription = ($name, None, false);
+        $(#[$attr_method])*
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        #[doc = concat!("let ", stringify!($fil), " = \"value\";")]
+        ///
+        /// rsx! {
+        ///     // Attributes need to be under the element they modify
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Attributes are followed by a colon and then the value of the attribute
+        #[doc = concat!("        ", stringify!($fil), ": \"value\"")]
+        ///     }
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Or you can use the shorthand syntax if you have a variable in scope that has the same name as the attribute
+        #[doc = concat!("        ", stringify!($fil), ",")]
+        ///     }
+        /// };
+        /// ```
+        pub const $fil: AttributeDescription = ($name, None, false);
     };
 
     (
-        $(#[$attr_method:meta])*
-        $fil:ident: $vil:ident (volatile),
+        $element:ident {
+            $(#[$attr_method:meta])*
+            $fil:ident: $vil:ident (volatile),
+        }
     ) => {
-        pub const $fil: AttributeDiscription = (stringify!($fil), None, true);
+        $(#[$attr_method])*
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        #[doc = concat!("let ", stringify!($fil), " = \"value\";")]
+        ///
+        /// rsx! {
+        ///     // Attributes need to be under the element they modify
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Attributes are followed by a colon and then the value of the attribute
+        #[doc = concat!("        ", stringify!($fil), ": \"value\"")]
+        ///     }
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Or you can use the shorthand syntax if you have a variable in scope that has the same name as the attribute
+        #[doc = concat!("        ", stringify!($fil), ",")]
+        ///     }
+        /// };
+        /// ```
+        pub const $fil: AttributeDescription = (stringify!($fil), None, true);
     };
 
     (
-        $(#[$attr_method:meta])*
-        $fil:ident: $vil:ident (in $ns:literal),
+        $element:ident {
+            $(#[$attr_method:meta])*
+            $fil:ident: $vil:ident (in $ns:literal),
+        }
     ) => {
-        pub const $fil: AttributeDiscription = (stringify!($fil), Some($ns), false)
+        $(#[$attr_method])*
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        #[doc = concat!("let ", stringify!($fil), " = \"value\";")]
+        ///
+        /// rsx! {
+        ///     // Attributes need to be under the element they modify
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Attributes are followed by a colon and then the value of the attribute
+        #[doc = concat!("        ", stringify!($fil), ": \"value\"")]
+        ///     }
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Or you can use the shorthand syntax if you have a variable in scope that has the same name as the attribute
+        #[doc = concat!("        ", stringify!($fil), ",")]
+        ///     }
+        /// };
+        /// ```
+        pub const $fil: AttributeDescription = (stringify!($fil), Some($ns), false)
     };
 
     (
-        $(#[$attr_method:meta])*
-        $fil:ident: $vil:ident (in $ns:literal : volatile),
+        $element:ident {
+            $(#[$attr_method:meta])*
+            $fil:ident: $vil:ident (in $ns:literal : volatile),
+        }
     ) => {
-        pub const $fil: AttributeDiscription = (stringify!($fil), Some($ns), true)
+        $(#[$attr_method])*
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        #[doc = concat!("let ", stringify!($fil), " = \"value\";")]
+        ///
+        /// rsx! {
+        ///     // Attributes need to be under the element they modify
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Attributes are followed by a colon and then the value of the attribute
+        #[doc = concat!("        ", stringify!($fil), ": \"value\"")]
+        ///     }
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Or you can use the shorthand syntax if you have a variable in scope that has the same name as the attribute
+        #[doc = concat!("        ", stringify!($fil), ",")]
+        ///     }
+        /// };
+        /// ```
+        pub const $fil: AttributeDescription = (stringify!($fil), Some($ns), true)
     };
 }
 
@@ -115,21 +224,47 @@ macro_rules! impl_element {
     ) => {
         #[allow(non_camel_case_types)]
         $(#[$attr])*
-        pub struct $name;
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        /// # let attributes = vec![];
+        /// # fn ChildComponent() -> Element { unimplemented!() }
+        /// # let raw_expression: Element = rsx! {};
+        /// rsx! {
+        ///     // Elements are followed by braces that surround any attributes and children for that element
+        #[doc = concat!("    ", stringify!($name), " {")]
+        ///         // Add any attributes first
+        ///         class: "my-class",
+        ///         "custom-attribute-name": "value",
+        ///         // Then add any attributes you are spreading into this element
+        ///         ..attributes,
+        ///         // Then add any children elements, components, text nodes, or raw expressions
+        ///         div {}
+        ///         ChildComponent {}
+        ///         "child text"
+        ///         {raw_expression}
+        ///     }
+        /// };
+        /// ```
+        pub mod $name {
+            #[allow(unused)]
+            use super::*;
+            pub use crate::attribute_groups::global_attributes::*;
 
-        impl $name {
             pub const TAG_NAME: &'static str = stringify!($name);
             pub const NAME_SPACE: Option<&'static str> = None;
 
             $(
                 impl_attribute!(
-                    $(#[$attr_method])*
-                    $fil: $vil ($extra),
+                    $name {
+                        $(#[$attr_method])*
+                        $fil: $vil ($extra),
+                    }
                 );
             )*
         }
-
-        impl GlobalAttributes for $name {}
     };
 
     (
@@ -141,20 +276,45 @@ macro_rules! impl_element {
             )*
         }
     ) => {
-        #[allow(non_camel_case_types)]
         $(#[$attr])*
-        pub struct $name;
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        /// # let attributes = vec![];
+        /// # fn ChildComponent() -> Element { unimplemented!() }
+        /// # let raw_expression: Element = rsx! {};
+        /// rsx! {
+        ///     // Elements are followed by braces that surround any attributes and children for that element
+        #[doc = concat!("    ", stringify!($name), " {")]
+        ///         // Add any attributes first
+        ///         color: "red",
+        ///         "custom-attribute-name": "value",
+        ///         // Then add any attributes you are spreading into this element
+        ///         ..attributes,
+        ///         // Then add any children elements, components, text nodes, or raw expressions
+        ///         circle { cx: "10", cy: "10", r: "2", fill: "red" }
+        ///         ChildComponent {}
+        ///         "child text"
+        ///         {raw_expression}
+        ///     }
+        /// };
+        /// ```
+        pub mod $name {
+            #[allow(unused)]
+            use super::*;
+            pub use crate::attribute_groups::svg_attributes::*;
 
-        impl SvgAttributes for $name {}
-
-        impl $name {
             pub const TAG_NAME: &'static str = stringify!($name);
             pub const NAME_SPACE: Option<&'static str> = Some($namespace);
 
             $(
                 impl_attribute!(
-                    $(#[$attr_method])*
-                    $fil: $vil ($extra),
+                    $name {
+                        $(#[$attr_method])*
+                        $fil: $vil ($extra),
+                    }
                 );
             )*
         }
@@ -171,18 +331,44 @@ macro_rules! impl_element {
     ) => {
         #[allow(non_camel_case_types)]
         $(#[$attr])*
-        pub struct $element;
+        ///
+        /// ## Usage in rsx
+        ///
+        /// ```rust, no_run
+        /// # use dioxus::prelude::*;
+        /// # let attributes = vec![];
+        /// # fn ChildComponent() -> Element { unimplemented!() }
+        /// # let raw_expression: Element = rsx! {};
+        /// rsx! {
+        ///     // Elements are followed by braces that surround any attributes and children for that element
+        #[doc = concat!("    ", stringify!($element), " {")]
+        ///         // Add any attributes first
+        ///         color: "red",
+        ///         "custom-attribute-name": "value",
+        ///         // Then add any attributes you are spreading into this element
+        ///         ..attributes,
+        ///         // Then add any children elements, components, text nodes, or raw expressions
+        ///         circle { cx: "10", cy: "10", r: "2", fill: "red" }
+        ///         ChildComponent {}
+        ///         "child text"
+        ///         {raw_expression}
+        ///     }
+        /// };
+        /// ```
+        pub mod $element {
+            #[allow(unused)]
+            use super::*;
+            pub use crate::attribute_groups::svg_attributes::*;
 
-        impl SvgAttributes for $element {}
-
-        impl $element {
             pub const TAG_NAME: &'static str = $name;
             pub const NAME_SPACE: Option<&'static str> = Some($namespace);
 
             $(
                 impl_attribute!(
-                    $(#[$attr_method])*
-                    $fil: $vil ($extra),
+                    $element {
+                        $(#[$attr_method])*
+                        $fil: $vil ($extra),
+                    }
                 );
             )*
         }
@@ -384,10 +570,47 @@ macro_rules! builder_constructors {
             );
         )*
 
+        /// This module contains helpers for rust analyzer autocompletion
+        #[doc(hidden)]
+        pub mod completions {
+            /// This helper tells rust analyzer that it should autocomplete the element name with braces.
+            #[allow(non_camel_case_types)]
+            pub enum CompleteWithBraces {
+                $(
+                    $(#[$attr])*
+                    ///
+                    /// ## Usage in rsx
+                    ///
+                    /// ```rust, no_run
+                    /// # use dioxus::prelude::*;
+                    /// # let attributes = vec![];
+                    /// # fn ChildComponent() -> Element { unimplemented!() }
+                    /// # let raw_expression: Element = rsx! {};
+                    /// rsx! {
+                    ///     // Elements are followed by braces that surround any attributes and children for that element
+                    #[doc = concat!("    ", stringify!($name), " {")]
+                    ///         // Add any attributes first
+                    ///         class: "my-class",
+                    ///         "custom-attribute-name": "value",
+                    ///         // Then add any attributes you are spreading into this element
+                    ///         ..attributes,
+                    ///         // Then add any children elements, components, text nodes, or raw expressions
+                    ///         div {}
+                    ///         ChildComponent {}
+                    ///         "child text"
+                    ///         {raw_expression}
+                    ///     }
+                    /// };
+                    /// ```
+                    $name {}
+                ),*
+            }
+        }
+
         pub(crate) mod extensions {
             use super::*;
             $(
-                impl_extension_attributes![ELEMENT $name { $($fil,)* }];
+                impl_extension_attributes![$name { $($fil,)* }];
             )*
         }
     };
@@ -398,7 +621,7 @@ macro_rules! builder_constructors {
 //
 // Does not include obsolete elements.
 //
-// This namespace represents a collection of modern HTML-5 compatiable elements.
+// This namespace represents a collection of modern HTML-5 compatible elements.
 //
 // This list does not include obsolete, deprecated, experimental, or poorly supported elements.
 builder_constructors! {
@@ -432,6 +655,11 @@ builder_constructors! {
         title: String DEFAULT, // FIXME
         r#type: Mime "type",
         integrity: String DEFAULT,
+        disabled: Bool DEFAULT,
+        referrerpolicy: ReferrerPolicy DEFAULT,
+        fetchpriority: FetchPriority DEFAULT,
+        blocking: Blocking DEFAULT,
+        r#as: As "as",
     };
 
     /// Build a
@@ -442,6 +670,7 @@ builder_constructors! {
         content: String DEFAULT,
         http_equiv: String "http-equiv",
         name: Metadata DEFAULT,
+        property: Metadata DEFAULT,
     };
 
     /// Build a
@@ -510,14 +739,6 @@ builder_constructors! {
     /// - The most important heading is `<h1>` and the least important heading is `<h6>`.
     /// - The `<h1>` heading is the first heading in the document.
     /// - The `<h1>` heading is usually a large bolded font.
-    ///
-    /// # Usage
-    ///
-    /// ```rust, ignore
-    /// html!(<h1> A header element </h1>)
-    /// rsx!(h1 { "A header element" })
-    /// LazyNodes::new(|f| f.el(h1).children([f.text("A header element")]).finish())
-    /// ```
     h1 None {};
 
     /// Build a
@@ -530,13 +751,6 @@ builder_constructors! {
     /// - The most important heading is `<h1>` and the least important heading is `<h6>`.
     /// - The `<h2>` heading is the second heading in the document.
     /// - The `<h2>` heading is usually a large bolded font.
-    ///
-    /// # Usage
-    /// ```rust, ignore
-    /// html!(<h2> A header element </h2>)
-    /// rsx!(h2 { "A header element" })
-    /// LazyNodes::new(|f| f.el(h2).children([f.text("A header element")]).finish())
-    /// ```
     h2 None {};
 
     /// Build a
@@ -545,10 +759,10 @@ builder_constructors! {
     ///
     /// # About
     /// - The HTML <h1> element is found within the <body> tag.
-    /// - Headings can range from <h1> to <h6>.
-    /// - The most important heading is <h1> and the least important heading is <h6>.
-    /// - The <h1> heading is the first heading in the document.
-    /// - The <h1> heading is usually a large bolded font.
+    /// - Headings can range from `<h1>` to `<h6>`.
+    /// - The most important heading is `<h1>`` and the least important heading is `<h6>`.
+    /// - The `<h1>` heading is the first heading in the document.
+    /// - The `<h1>` heading is usually a large bolded font.
     h3 None {};
 
     /// Build a
@@ -601,19 +815,12 @@ builder_constructors! {
     /// Part of the HTML namespace. Only works in HTML-compatible renderers
     ///
     /// ## Definition and Usage
-    /// - The <div> tag defines a division or a section in an HTML document.
-    /// - The <div> tag is used as a container for HTML elements - which is then styled with CSS or manipulated with  JavaScript.
-    /// - The <div> tag is easily styled by using the class or id attribute.
-    /// - Any sort of content can be put inside the <div> tag!
+    /// - The `<div>` tag defines a division or a section in an HTML document.
+    /// - The `<div>` tag is used as a container for HTML elements - which is then styled with CSS or manipulated with  JavaScript.
+    /// - The `<div>` tag is easily styled by using the class or id attribute.
+    /// - Any sort of content can be put inside the `<div>` tag!
     ///
     /// Note: By default, browsers always place a line break before and after the <div> element.
-    ///
-    /// ## Usage
-    /// ```rust, ignore
-    /// html!(<div> A header element </div>)
-    /// rsx!(div { "A header element" })
-    /// LazyNodes::new(|f| f.element(div, &[], &[], &[], None))
-    /// ```
     ///
     /// ## References:
     /// - <https://developer.mozilla.org/en-US/docs/Web/HTML/Element/div>
@@ -1060,6 +1267,8 @@ builder_constructors! {
         nonce: Nonce DEFAULT,
         src: Uri DEFAULT,
         text: String DEFAULT,
+        fetchpriority: String DEFAULT,
+        referrerpolicy: String DEFAULT,
 
         r#async: Bool "async",
         r#type: String "type", // TODO could be an enum
@@ -1168,6 +1377,8 @@ builder_constructors! {
         formnovalidate: Bool DEFAULT,
         formtarget: Target DEFAULT,
         name: Id DEFAULT,
+        popovertarget: String DEFAULT,
+        popovertargetaction: String DEFAULT,
         value: String DEFAULT,
         r#type: String "type",
     };
@@ -1224,6 +1435,8 @@ builder_constructors! {
         multiple: Bool DEFAULT,
         name: Id DEFAULT,
         pattern: String DEFAULT,
+        popovertarget: String DEFAULT,
+        popovertargetaction: String DEFAULT,
         placeholder: String DEFAULT,
         readonly: Bool DEFAULT,
         required: Bool DEFAULT,
@@ -1399,7 +1612,9 @@ builder_constructors! {
     /// Build a
     /// [`<slot>`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/slot)
     /// element.
-    slot None {};
+    slot None {
+        name: String DEFAULT,
+    };
 
     /// Build a
     /// [`<template>`](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/template)
@@ -1613,10 +1828,10 @@ builder_constructors! {
     /// element.
     hatchpath "http://www.w3.org/2000/svg" {};
 
-    // /// Build a
-    // /// [`<image>`](https://developer.mozilla.org/en-US/docs/Web/SVG/Element/image)
-    // /// element.
-    // image "http://www.w3.org/2000/svg" {};
+    /// Build a
+    /// [`<image>`](https://developer.mozilla.org/en-US/docs/Web/SVG/Element/image)
+    /// element.
+    image "http://www.w3.org/2000/svg" {};
 
     /// Build a
     /// [`<line>`](https://developer.mozilla.org/en-US/docs/Web/SVG/Element/line)
@@ -1743,5 +1958,200 @@ builder_constructors! {
     // /// element.
     r#use ["use", "http://www.w3.org/2000/svg"] {
         href: String DEFAULT,
+    };
+
+    // MathML elements
+
+    /// Build a
+    /// [`<annotation>`](https://w3c.github.io/mathml-core/#dfn-annotation)
+    /// element.
+    annotation "http://www.w3.org/1998/Math/MathML" {
+            encoding: String DEFAULT,
+    };
+
+    /// Build a
+    /// [`<annotation-xml>`](https://w3c.github.io/mathml-core/#dfn-annotation-xml)
+    /// element.
+    annotationXml ["annotation-xml", "http://www.w3.org/1998/Math/MathML"] {
+            encoding: String DEFAULT,
+    };
+
+    /// Build a
+    /// [`<merror>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/merror)
+    /// element.
+    merror "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<math>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/math)
+    /// element.
+    math "http://www.w3.org/1998/Math/MathML" {
+        display: String DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mfrac>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mfrac)
+    /// element.
+    mfrac "http://www.w3.org/1998/Math/MathML" {
+        linethickness: usize DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mi>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mi)
+    /// element.
+    mi "http://www.w3.org/1998/Math/MathML" {
+        mathvariant: String DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mmultiscripts>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mmultiscripts)
+    /// element.
+    mmultiscripts "http://www.w3.org/1998/math/mathml" {};
+
+    /// Build a
+    /// [`<mn>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mn)
+    /// element.
+    mn "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mo>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mo)
+    /// element.
+    mo "http://www.w3.org/1998/Math/MathML" {
+        fence: Bool DEFAULT,
+        largeop: Bool DEFAULT,
+        lspace: usize DEFAULT,
+        maxsize: usize DEFAULT,
+        minsize: usize DEFAULT,
+        movablelimits: Bool DEFAULT,
+        rspace: usize DEFAULT,
+        separator: Bool DEFAULT,
+        stretchy: Bool DEFAULT,
+        symmetric: Bool DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mover>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mover)
+    /// element.
+    mover "http://www.w3.org/1998/Math/MathML" {
+        accent: Bool DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mpadded>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mpadded)
+    /// element.
+    mpadded "http://www.w3.org/1998/Math/MathML" {
+        depth: usize DEFAULT,
+        height: usize DEFAULT,
+        lspace: usize DEFAULT,
+        voffset: usize DEFAULT,
+        width: usize DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mphantom>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mphantom)
+    /// element.
+    mphantom "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mprescripts>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mprescripts)
+    /// element.
+    mprescripts "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mroot>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mroot)
+    /// element.
+    mroot "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mrow>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mrow)
+    /// element.
+    mrow "http://www.w3.org/1998/Math/MathML" {
+
+    };
+
+    /// Build a
+    /// [`<ms>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/ms)
+    /// element.
+    ms "http://www.w3.org/1998/Math/MathML" {
+        lquote: String DEFAULT,
+        rquote: String DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mspace>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mspace)
+    /// element.
+    mspace "http://www.w3.org/1998/Math/MathML" {
+        depth: usize DEFAULT,
+        height: usize DEFAULT,
+        width: usize DEFAULT,
+    };
+
+    /// Build a
+    /// [`<msqrt>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/msqrt)
+    /// element.
+    msqrt "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mstyle>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mstyle)
+    /// element.
+    mstyle "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<msub>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/msub)
+    /// element.
+    msub "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<msubsup>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/msubsup)
+    /// element.
+    msubsup "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<msup>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/msup)
+    /// element.
+    msup "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mtable>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mtable)
+    /// element.
+    mtable "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mtd>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mtd)
+    /// element.
+    mtd "http://www.w3.org/1998/Math/MathML" {
+        columnspan: usize DEFAULT,
+        rowspan: usize DEFAULT,
+    };
+
+    /// Build a
+    /// [`<mtext>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mtext)
+    /// element.
+    mtext "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<mtr>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/mtr)
+    /// element.
+    mtr "http://www.w3.org/1998/Math/MathML" {};
+
+    /// Build a
+    /// [`<munder>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/munder)
+    /// element.
+    munder "http://www.w3.org/1998/Math/MathML" {
+        accentunder: Bool DEFAULT,
+    };
+
+    /// Build a
+    /// [`<munderover>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/munderover)
+    /// element.
+    munderover "http://www.w3.org/1998/Math/MathML" {
+        accent: Bool DEFAULT,
+        accentunder: Bool DEFAULT,
+    };
+
+    /// Build a
+    /// [`<semantics>`](https://developer.mozilla.org/en-US/docs/Web/MathML/Element/semantics)
+    /// element.
+    semantics "http://www.w3.org/1998/Math/MathML" {
+        encoding: String DEFAULT,
     };
 }

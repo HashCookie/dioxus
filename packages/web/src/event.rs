@@ -4,8 +4,7 @@ use dioxus_html::{
     point_interaction::{
         InteractionElementOffset, InteractionLocation, ModifiersInteraction, PointerInteraction,
     },
-    prelude::FormValue,
-    DragData, FileEngine, FormData, HasDragData, HasFileData, HasFormData, HasImageData,
+    DragData, FormData, FormValue, HasDragData, HasFileData, HasFormData, HasImageData,
     HasMouseData, HtmlEventConverter, ImageData, MountedData, PlatformEventData, ScrollData,
 };
 use js_sys::Array;
@@ -49,10 +48,7 @@ impl HtmlEventConverter for WebEventConverter {
     #[inline(always)]
     fn convert_drag_data(&self, event: &dioxus_html::PlatformEventData) -> dioxus_html::DragData {
         let event = downcast_event(event);
-        DragData::new(WebDragData::new(
-            event.element.clone(),
-            event.raw.clone().unchecked_into(),
-        ))
+        DragData::new(WebDragData::new(event.raw.clone().unchecked_into()))
     }
 
     #[inline(always)]
@@ -389,7 +385,11 @@ impl HasFormData for WebFormData {
     }
 
     fn values(&self) -> HashMap<String, FormValue> {
-        let mut values = std::collections::HashMap::new();
+        let mut values = HashMap::new();
+
+        fn insert_value(map: &mut HashMap<String, FormValue>, key: String, new_value: String) {
+            map.entry(key.clone()).or_default().0.push(new_value);
+        }
 
         // try to fill in form values
         if let Some(form) = self.element.dyn_ref::<web_sys::HtmlFormElement>() {
@@ -398,22 +398,20 @@ impl HasFormData for WebFormData {
                 if let Ok(array) = value.dyn_into::<Array>() {
                     if let Some(name) = array.get(0).as_string() {
                         if let Ok(item_values) = array.get(1).dyn_into::<Array>() {
-                            let item_values: Vec<String> =
-                                item_values.iter().filter_map(|v| v.as_string()).collect();
-
-                            values.insert(name, FormValue::VecText(item_values));
+                            item_values
+                                .iter()
+                                .filter_map(|v| v.as_string())
+                                .for_each(|v| insert_value(&mut values, name.clone(), v));
                         } else if let Ok(item_value) = array.get(1).dyn_into::<JsValue>() {
-                            values.insert(name, FormValue::Text(item_value.as_string().unwrap()));
+                            insert_value(&mut values, name, item_value.as_string().unwrap());
                         }
                     }
                 }
             }
-        }
-
-        // try to fill in select element values
-        if let Some(select) = self.element.dyn_ref::<web_sys::HtmlSelectElement>() {
+        } else if let Some(select) = self.element.dyn_ref::<web_sys::HtmlSelectElement>() {
+            // try to fill in select element values
             let options = get_select_data(select);
-            values.insert("options".to_string(), FormValue::VecText(options));
+            values.insert("options".to_string(), FormValue(options));
         }
 
         values
@@ -425,17 +423,15 @@ impl HasFormData for WebFormData {
 }
 
 impl HasFileData for WebFormData {
-    fn files(&self) -> Option<std::sync::Arc<dyn FileEngine>> {
-        #[cfg(not(feature = "file_engine"))]
-        let files = None;
-        #[cfg(feature = "file_engine")]
+    #[cfg(feature = "file_engine")]
+    fn files(&self) -> Option<std::sync::Arc<dyn dioxus_html::FileEngine>> {
         let files = self
             .element
             .dyn_ref()
             .and_then(|input: &web_sys::HtmlInputElement| {
                 input.files().and_then(|files| {
                     #[allow(clippy::arc_with_non_send_sync)]
-                    crate::file_engine::WebFileEngine::new(files).map(|f| {
+                    dioxus_html::WebFileEngine::new(files).map(|f| {
                         std::sync::Arc::new(f) as std::sync::Arc<dyn dioxus_html::FileEngine>
                     })
                 })
@@ -446,13 +442,12 @@ impl HasFileData for WebFormData {
 }
 
 struct WebDragData {
-    element: Element,
     raw: MouseEvent,
 }
 
 impl WebDragData {
-    fn new(element: Element, raw: MouseEvent) -> Self {
-        Self { element, raw }
+    fn new(raw: MouseEvent) -> Self {
+        Self { raw }
     }
 }
 
@@ -509,18 +504,18 @@ impl InteractionLocation for WebDragData {
 }
 
 impl HasFileData for WebDragData {
-    fn files(&self) -> Option<std::sync::Arc<dyn FileEngine>> {
-        #[cfg(not(feature = "file_engine"))]
-        let files = None;
-        #[cfg(feature = "file_engine")]
+    #[cfg(feature = "file_engine")]
+    fn files(&self) -> Option<std::sync::Arc<dyn dioxus_html::FileEngine>> {
         let files = self
-            .element
-            .dyn_ref()
-            .and_then(|input: &web_sys::HtmlInputElement| {
-                input.files().and_then(|files| {
-                    #[allow(clippy::arc_with_non_send_sync)]
-                    crate::file_engine::WebFileEngine::new(files).map(|f| {
-                        std::sync::Arc::new(f) as std::sync::Arc<dyn dioxus_html::FileEngine>
+            .raw
+            .dyn_ref::<web_sys::DragEvent>()
+            .and_then(|drag_event| {
+                drag_event.data_transfer().and_then(|dt| {
+                    dt.files().and_then(|files| {
+                        #[allow(clippy::arc_with_non_send_sync)]
+                        dioxus_html::WebFileEngine::new(files).map(|f| {
+                            std::sync::Arc::new(f) as std::sync::Arc<dyn dioxus_html::FileEngine>
+                        })
                     })
                 })
             });
@@ -536,19 +531,7 @@ export function get_form_data(form) {
     const formData = new FormData(form);
 
     for (let name of formData.keys()) {
-        const fieldType = form.elements[name].type;
-        console.log(fieldType);
-
-        switch (fieldType) {
-            case "select-multiple":
-                values.set(name, formData.getAll(name));
-                break;
-
-            // add cases for fieldTypes that can hold multiple values here
-            default:
-                values.set(name, formData.get(name));
-                break;
-        }
+        values.set(name, formData.getAll(name));
     }
 
     return values;

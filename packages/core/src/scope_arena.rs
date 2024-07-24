@@ -1,106 +1,143 @@
+use crate::innerlude::{throw_error, RenderError, RenderReturn, ScopeOrder};
+use crate::prelude::ReactiveContext;
+use crate::scope_context::SuspenseLocation;
 use crate::{
-    any_props::AnyProps,
-    bump_frame::BumpFrame,
-    innerlude::DirtyScope,
-    nodes::RenderReturn,
-    scope_context::ScopeContext,
-    scopes::{ScopeId, ScopeState},
+    any_props::{AnyProps, BoxedAnyProps},
+    innerlude::ScopeState,
+    scope_context::Scope,
+    scopes::ScopeId,
     virtual_dom::VirtualDom,
 };
+use crate::{Element, VNode};
 
 impl VirtualDom {
     pub(super) fn new_scope(
         &mut self,
-        props: Box<dyn AnyProps<'static>>,
+        props: BoxedAnyProps,
         name: &'static str,
-    ) -> &ScopeState {
+    ) -> &mut ScopeState {
         let parent_id = self.runtime.current_scope_id();
-        let height = parent_id
-            .and_then(|parent_id| self.get_scope(parent_id).map(|f| f.context().height + 1))
-            .unwrap_or(0);
+        let height = match parent_id.and_then(|id| self.runtime.get_state(id)) {
+            Some(parent) => parent.height() + 1,
+            None => 0,
+        };
+        let suspense_boundary = self
+            .runtime
+            .current_suspense_location()
+            .unwrap_or(SuspenseLocation::NotSuspended);
         let entry = self.scopes.vacant_entry();
         let id = ScopeId(entry.key());
 
-        let scope = entry.insert(Box::new(ScopeState {
+        let scope_runtime = Scope::new(name, id, parent_id, height, suspense_boundary);
+        let reactive_context = ReactiveContext::new_for_scope(&scope_runtime, &self.runtime);
+
+        let scope = entry.insert(ScopeState {
             runtime: self.runtime.clone(),
             context_id: id,
+            props,
+            last_rendered_node: Default::default(),
+            reactive_context,
+        });
 
-            props: Some(props),
-
-            node_arena_1: BumpFrame::new(0),
-            node_arena_2: BumpFrame::new(0),
-
-            render_cnt: Default::default(),
-            hooks: Default::default(),
-            hook_idx: Default::default(),
-
-            borrowed_props: Default::default(),
-            attributes_to_drop_before_render: Default::default(),
-            element_refs_to_drop: Default::default(),
-        }));
-
-        let context =
-            ScopeContext::new(name, id, parent_id, height, self.runtime.scheduler.clone());
-        self.runtime.create_context_at(id, context);
+        self.runtime.create_scope(scope_runtime);
+        tracing::trace!("created scope {id:?} with parent {parent_id:?}");
 
         scope
     }
 
-    pub(crate) fn run_scope(&mut self, scope_id: ScopeId) -> &RenderReturn {
-        self.runtime.scope_stack.borrow_mut().push(scope_id);
-        // Cycle to the next frame and then reset it
-        // This breaks any latent references, invalidating every pointer referencing into it.
-        // Remove all the outdated listeners
-        self.ensure_drop_safety(scope_id);
-
-        let new_nodes = unsafe {
+    /// Run a scope and return the rendered nodes. This will not modify the DOM or update the last rendered node of the scope.
+    #[tracing::instrument(skip(self), level = "trace", name = "VirtualDom::run_scope")]
+    pub(crate) fn run_scope(&mut self, scope_id: ScopeId) -> RenderReturn {
+        debug_assert!(
+            crate::Runtime::current().is_some(),
+            "Must be in a dioxus runtime"
+        );
+        self.runtime.clone().with_scope_on_stack(scope_id, || {
             let scope = &self.scopes[scope_id.0];
-            scope.previous_frame().reset();
+            let output = {
+                let scope_state = scope.state();
 
-            scope.context().suspended.set(false);
+                scope_state.hook_index.set(0);
 
-            scope.hook_idx.set(0);
+                // Run all pre-render hooks
+                for pre_run in scope_state.before_render.borrow_mut().iter_mut() {
+                    pre_run();
+                }
 
-            // safety: due to how we traverse the tree, we know that the scope is not currently aliased
-            let props: &dyn AnyProps = scope.props.as_ref().unwrap().as_ref();
-            let props: &dyn AnyProps = std::mem::transmute(props);
+                let props: &dyn AnyProps = &*scope.props;
 
-            let _span = tracing::trace_span!("render", scope = %scope.context().name);
-            props.render(scope).extend_lifetime()
-        };
+                let span = tracing::trace_span!("render", scope = %scope.state().name);
+                span.in_scope(|| {
+                    scope.reactive_context.reset_and_run_in(|| {
+                        let mut render_return = props.render();
+                        self.handle_element_return(
+                            &mut render_return.node,
+                            scope_id,
+                            &scope.state(),
+                        );
+                        render_return
+                    })
+                })
+            };
 
-        let scope = &self.scopes[scope_id.0];
+            let scope_state = scope.state();
 
-        // We write on top of the previous frame and then make it the current by pushing the generation forward
-        let frame = scope.previous_frame();
-
-        // set the new head of the bump frame
-        let allocated = &*frame.bump().alloc(new_nodes);
-        frame.node.set(allocated);
-
-        // And move the render generation forward by one
-        scope.render_cnt.set(scope.render_cnt.get() + 1);
-
-        let context = scope.context();
-        // remove this scope from dirty scopes
-        self.dirty_scopes.remove(&DirtyScope {
-            height: context.height,
-            id: context.id,
-        });
-
-        if context.suspended.get() {
-            if matches!(allocated, RenderReturn::Aborted(_)) {
-                self.suspended_scopes.insert(context.id);
+            // Run all post-render hooks
+            for post_run in scope_state.after_render.borrow_mut().iter_mut() {
+                post_run();
             }
-        } else if !self.suspended_scopes.is_empty() {
-            _ = self.suspended_scopes.remove(&context.id);
+
+            // remove this scope from dirty scopes
+            self.dirty_scopes
+                .remove(&ScopeOrder::new(scope_state.height, scope_id));
+            output
+        })
+    }
+
+    /// Insert any errors, or suspended tasks from an element return into the runtime
+    fn handle_element_return(&self, node: &mut Element, scope_id: ScopeId, scope_state: &Scope) {
+        match node {
+            Err(RenderError::Aborted(e)) => {
+                tracing::error!(
+                    "Error while rendering component `{}`:\n{e}",
+                    scope_state.name
+                );
+                throw_error(e.clone_mounted());
+                e.render = VNode::placeholder();
+            }
+            Err(RenderError::Suspended(e)) => {
+                let task = e.task();
+                // Insert the task into the nearest suspense boundary if it exists
+                let boundary = self
+                    .runtime
+                    .get_state(scope_id)
+                    .unwrap()
+                    .suspense_location();
+                let already_suspended = self
+                    .runtime
+                    .tasks
+                    .borrow()
+                    .get(task.id)
+                    .expect("Suspended on a task that no longer exists")
+                    .suspend(boundary.clone());
+                if !already_suspended {
+                    tracing::trace!("Suspending {:?} on {:?}", scope_id, task);
+                    // Add this task to the suspended tasks list of the boundary
+                    if let SuspenseLocation::UnderSuspense(boundary) = &boundary {
+                        boundary.add_suspended_task(e.clone());
+                    }
+                    self.runtime
+                        .suspended_tasks
+                        .set(self.runtime.suspended_tasks.get() + 1);
+                }
+                e.placeholder = VNode::placeholder();
+            }
+            Ok(_) => {
+                // If the render was successful, we can move the render generation forward by one
+                scope_state
+                    .render_count
+                    .set(scope_state.render_count.get() + 1);
+            }
         }
-
-        // rebind the lifetime now that its stored internally
-        let result = unsafe { allocated.extend_lifetime_ref() };
-
-        self.runtime.scope_stack.borrow_mut().pop();
-
-        result
     }
 }

@@ -7,10 +7,10 @@ mod app;
 mod assets;
 mod config;
 mod desktop_context;
+mod document;
 mod edits;
 mod element;
-mod escape;
-mod eval;
+mod event_handlers;
 mod events;
 mod file_upload;
 mod hooks;
@@ -26,9 +26,8 @@ mod webview;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 mod mobile_shortcut;
 
-// The main entrypoint for this crate
-pub use launch::*;
-mod launch;
+/// The main entrypoint for this crate
+pub mod launch;
 
 // Reexport tao and wry, might want to re-export other important things
 pub use tao;
@@ -36,13 +35,15 @@ pub use tao::dpi::{LogicalPosition, LogicalSize};
 pub use tao::event::WindowEvent;
 pub use tao::window::WindowBuilder;
 pub use wry;
+// Reexport muda only if we are on desktop platforms that support menus
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub use muda;
 
 // Public exports
 pub use assets::AssetRequest;
 pub use config::{Config, WindowCloseBehaviour};
-pub use desktop_context::{
-    window, DesktopContext, DesktopService, WryEventHandler, WryEventHandlerId,
-};
-pub use hooks::{use_asset_handler, use_global_shortcut, use_window, use_wry_event_handler};
-pub use shortcut::{ShortcutHandle, ShortcutId, ShortcutRegistryError};
+pub use desktop_context::{window, DesktopContext, DesktopService};
+pub use event_handlers::WryEventHandler;
+pub use hooks::*;
+pub use shortcut::{ShortcutHandle, ShortcutRegistryError};
 pub use wry::RequestAsyncResponder;

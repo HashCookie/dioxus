@@ -1,9 +1,9 @@
-use dioxus_core::prelude::{Runtime, RuntimeGuard, ScopeId};
+use dioxus_core::prelude::{Runtime, ScopeId};
 use rustc_hash::FxHashMap;
 use std::{cell::RefCell, rc::Rc};
 use wry::{http::Request, RequestAsyncResponder};
 
-///
+/// A request for an asset within dioxus-desktop.
 pub type AssetRequest = Request<Vec<u8>>;
 
 pub struct AssetHandler {
@@ -36,11 +36,9 @@ impl AssetHandlerRegistry {
         responder: RequestAsyncResponder,
     ) {
         if let Some(handler) = self.handlers.borrow().get(name) {
-            // make sure the runtime is alive for the duration of the handler
-            // We should do this for all the things - not just asset handlers
-            RuntimeGuard::with(self.dom_rt.clone(), Some(handler.scope), || {
-                (handler.f)(request, responder)
-            });
+            // And run the handler in the scope of the component that created it
+            self.dom_rt
+                .on_scope(handler.scope, || (handler.f)(request, responder));
         }
     }
 

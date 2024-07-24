@@ -1,64 +1,65 @@
-use std::{
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
-
-use dioxus_core::Template;
-#[cfg(feature = "file_watcher")]
-pub use dioxus_html::HtmlCtx;
-use interprocess_docfix::local_socket::LocalSocketStream;
+use dioxus_rsx::HotReloadedTemplate;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
-#[cfg(feature = "custom_file_watcher")]
-mod file_watcher;
-#[cfg(feature = "custom_file_watcher")]
-pub use file_watcher::*;
+#[cfg(feature = "client")]
+mod client;
+
+#[cfg(feature = "client")]
+pub use client::*;
+
+#[cfg(feature = "serve")]
+mod ws_receiver;
+
+#[cfg(feature = "serve")]
+pub use ws_receiver::*;
 
 /// A message the hot reloading server sends to the client
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-pub enum HotReloadMsg {
-    /// A template has been updated
-    #[serde(borrow = "'static")]
-    UpdateTemplate(Template<'static>),
-    /// The program needs to be recompiled, and the client should shut down
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(bound(deserialize = "'de: 'static"))]
+pub enum DevserverMsg {
+    /// Attempt a hotreload
+    /// This includes all the templates/literals/assets/binary patches that have changed in one shot
+    HotReload(HotReloadMsg),
+
+    /// The app should reload completely if it can
+    FullReload,
+
+    /// The program is shutting down completely - maybe toss up a splash screen or something?
     Shutdown,
 }
 
-/// Connect to the hot reloading listener. The callback provided will be called every time a template change is detected
-pub fn connect(mut f: impl FnMut(HotReloadMsg) + Send + 'static) {
-    std::thread::spawn(move || {
-        let path = PathBuf::from("./").join("target").join("dioxusin");
-        if let Ok(socket) = LocalSocketStream::connect(path) {
-            let mut buf_reader = BufReader::new(socket);
-            loop {
-                let mut buf = String::new();
-                match buf_reader.read_line(&mut buf) {
-                    Ok(_) => {
-                        let template: HotReloadMsg =
-                            serde_json::from_str(Box::leak(buf.into_boxed_str())).unwrap();
-                        f(template);
-                    }
-                    Err(err) => {
-                        if err.kind() != std::io::ErrorKind::WouldBlock {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    });
+/// A message the client sends from the frontend to the devserver
+///
+/// This is used to communicate with the devserver
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum ClientMsg {
+    Log {
+        level: String,
+        messages: Vec<String>,
+    },
 }
 
-/// Start the hot reloading server with the current directory as the root
-#[macro_export]
-macro_rules! hot_reload_init {
-    () => {
-        #[cfg(debug_assertions)]
-        dioxus_hot_reload::init(dioxus_hot_reload::Config::new().root(env!("CARGO_MANIFEST_DIR")));
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(bound(deserialize = "'de: 'static"))]
+pub struct HotReloadMsg {
+    pub templates: Vec<HotReloadedTemplate>,
+    pub assets: Vec<PathBuf>,
+
+    /// A file changed that's not an asset or a rust file - best of luck!
+    pub unknown_files: Vec<PathBuf>,
+}
+
+#[test]
+fn serialize_client_msg() {
+    let msg = ClientMsg::Log {
+        level: "info".to_string(),
+        messages: vec!["hello world".to_string()],
     };
 
-    ($cfg: expr) => {
-        #[cfg(debug_assertions)]
-        dioxus_hot_reload::init($cfg.root(env!("CARGO_MANIFEST_DIR")));
-    };
+    let json = serde_json::to_string(&msg).unwrap();
+    assert_eq!(
+        json,
+        r#"{"Log":{"level":"info","messages":["hello world"]}}"#
+    );
 }

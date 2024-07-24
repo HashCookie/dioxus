@@ -1,33 +1,26 @@
 use super::cache::Segment;
 use crate::cache::StringCache;
 
-use dioxus_core::Attribute;
-use dioxus_core::{prelude::*, AttributeValue, DynamicNode, RenderReturn};
-use std::collections::HashMap;
+use dioxus_core::{prelude::*, AttributeValue, DynamicNode};
+use rustc_hash::FxHashMap;
 use std::fmt::Write;
 use std::sync::Arc;
+
+type ComponentRenderCallback = Arc<
+    dyn Fn(&mut Renderer, &mut dyn Write, &VirtualDom, ScopeId) -> std::fmt::Result + Send + Sync,
+>;
 
 /// A virtualdom renderer that caches the templates it has seen for faster rendering
 #[derive(Default)]
 pub struct Renderer {
-    /// should we do our best to prettify the output?
-    pub pretty: bool,
-
-    /// Control if elements are written onto a new line
-    pub newline: bool,
-
-    /// Should we sanitize text nodes? (escape HTML)
-    pub sanitize: bool,
-
     /// Choose to write ElementIDs into elements so the page can be re-hydrated later on
     pub pre_render: bool,
 
-    // Currently not implemented
-    // Don't proceed onto new components. Instead, put the name of the component.
-    pub skip_components: bool,
+    /// A callback used to render components. You can set this callback to control what components are rendered and add wrappers around components that are not present in CSR
+    render_components: Option<ComponentRenderCallback>,
 
     /// A cache of templates that have been rendered
-    template_cache: HashMap<&'static str, Arc<StringCache>>,
+    template_cache: FxHashMap<usize, Arc<StringCache>>,
 
     /// The current dynamic node id for hydration
     dynamic_node_id: usize,
@@ -38,45 +31,64 @@ impl Renderer {
         Self::default()
     }
 
+    /// Set the callback that the renderer uses to render components
+    pub fn set_render_components(
+        &mut self,
+        callback: impl Fn(&mut Renderer, &mut dyn Write, &VirtualDom, ScopeId) -> std::fmt::Result
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.render_components = Some(Arc::new(callback));
+    }
+
+    /// Reset the callback that the renderer uses to render components
+    pub fn reset_render_components(&mut self) {
+        self.render_components = None;
+    }
+
     pub fn render(&mut self, dom: &VirtualDom) -> String {
         let mut buf = String::new();
         self.render_to(&mut buf, dom).unwrap();
         buf
     }
 
-    pub fn render_to(&mut self, buf: &mut impl Write, dom: &VirtualDom) -> std::fmt::Result {
+    pub fn render_to<W: Write + ?Sized>(
+        &mut self,
+        buf: &mut W,
+        dom: &VirtualDom,
+    ) -> std::fmt::Result {
+        self.reset_hydration();
         self.render_scope(buf, dom, ScopeId::ROOT)
     }
 
-    pub fn render_scope(
+    /// Reset the renderer hydration state
+    pub fn reset_hydration(&mut self) {
+        self.dynamic_node_id = 0;
+    }
+
+    pub fn render_scope<W: Write + ?Sized>(
         &mut self,
-        buf: &mut impl Write,
+        buf: &mut W,
         dom: &VirtualDom,
         scope: ScopeId,
     ) -> std::fmt::Result {
-        // We should never ever run into async or errored nodes in SSR
-        // Error boundaries and suspense boundaries will convert these to sync
-        if let RenderReturn::Ready(node) = dom.get_scope(scope).unwrap().root_node() {
-            self.dynamic_node_id = 0;
-            self.render_template(buf, dom, node)?
-        };
+        let node = dom.get_scope(scope).unwrap().root_node();
+        self.render_template(buf, dom, node)?;
 
         Ok(())
     }
 
-    fn render_template(
+    fn render_template<W: Write + ?Sized>(
         &mut self,
-        buf: &mut impl Write,
+        mut buf: &mut W,
         dom: &VirtualDom,
         template: &VNode,
     ) -> std::fmt::Result {
         let entry = self
             .template_cache
-            .entry(template.template.get().name)
-            .or_insert_with({
-                let prerender = self.pre_render;
-                move || Arc::new(StringCache::from_template(template, prerender).unwrap())
-            })
+            .entry(template.template.get().id())
+            .or_insert_with(move || Arc::new(StringCache::from_template(template).unwrap()))
             .clone();
 
         let mut inner_html = None;
@@ -87,11 +99,22 @@ impl Renderer {
         // We need to keep track of the listeners so we can insert them into the right place
         let mut accumulated_listeners = Vec::new();
 
-        for segment in entry.segments.iter() {
+        // We keep track of the index we are on manually so that we can jump forward to a new section quickly without iterating every item
+        let mut index = 0;
+
+        while let Some(segment) = entry.segments.get(index) {
             match segment {
+                Segment::HydrationOnlySection(jump_to) => {
+                    // If we are not prerendering, we don't need to write the content of the hydration only section
+                    // Instead we can jump to the next section
+                    if !self.pre_render {
+                        index = *jump_to;
+                        continue;
+                    }
+                }
                 Segment::Attr(idx) => {
-                    let attr = &template.dynamic_attrs[*idx];
-                    attr.attribute_type().try_for_each(|attr| {
+                    let attrs = &*template.dynamic_attrs[*idx];
+                    for attr in attrs {
                         if attr.name == "dangerous_inner_html" {
                             inner_html = Some(attr);
                         } else if attr.namespace == Some("style") {
@@ -112,25 +135,18 @@ impl Renderer {
                                 }
                             }
                         }
-                        Ok(())
-                    })?;
+                    }
                 }
                 Segment::Node(idx) => match &template.dynamic_nodes[*idx] {
                     DynamicNode::Component(node) => {
-                        if self.skip_components {
-                            write!(buf, "<{}><{}/>", node.name, node.name)?;
+                        if let Some(render_components) = self.render_components.clone() {
+                            let scope_id = node.mounted_scope_id(*idx, template, dom).unwrap();
+
+                            render_components(self, &mut buf, dom, scope_id)?;
                         } else {
-                            let id = node.mounted_scope().unwrap();
-                            let scope = dom.get_scope(id).unwrap();
+                            let scope = node.mounted_scope(*idx, template, dom).unwrap();
                             let node = scope.root_node();
-                            match node {
-                                RenderReturn::Ready(node) => {
-                                    self.render_template(buf, dom, node)?
-                                }
-                                _ => todo!(
-                                    "generally, scopes should be sync, only if being traversed"
-                                ),
-                            }
+                            self.render_template(buf, dom, node)?
                         }
                     }
                     DynamicNode::Text(text) => {
@@ -143,7 +159,7 @@ impl Renderer {
                         write!(
                             buf,
                             "{}",
-                            askama_escape::escape(text.value, askama_escape::Html)
+                            askama_escape::escape(&text.value, askama_escape::Html)
                         )?;
 
                         if self.pre_render {
@@ -151,18 +167,14 @@ impl Renderer {
                         }
                     }
                     DynamicNode::Fragment(nodes) => {
-                        for child in *nodes {
+                        for child in nodes {
                             self.render_template(buf, dom, child)?;
                         }
                     }
 
                     DynamicNode::Placeholder(_) => {
                         if self.pre_render {
-                            write!(
-                                buf,
-                                "<pre data-node-hydration={}></pre>",
-                                self.dynamic_node_id
-                            )?;
+                            write!(buf, "<!--placeholder{}-->", self.dynamic_node_id)?;
                             self.dynamic_node_id += 1;
                         }
                     }
@@ -210,7 +222,7 @@ impl Renderer {
                     // then write any listeners
                     for name in accumulated_listeners.drain(..) {
                         write!(buf, ",{}:", &name[2..])?;
-                        write!(buf, "{}", dioxus_html::event_bubbles(name) as u8)?;
+                        write!(buf, "{}", dioxus_html::event_bubbles(&name[2..]) as u8)?;
                     }
                 }
 
@@ -219,6 +231,8 @@ impl Renderer {
                     self.dynamic_node_id += 1
                 }
             }
+
+            index += 1;
         }
 
         Ok(())
@@ -229,11 +243,11 @@ impl Renderer {
 fn to_string_works() {
     use dioxus::prelude::*;
 
-    fn app(cx: Scope) -> Element {
+    fn app() -> Element {
         let dynamic = 123;
         let dyn2 = "</diiiiiiiiv>"; // this should be escaped
 
-        render! {
+        rsx! {
             div { class: "asdasdasd", class: "asdasdasd", id: "id-{dynamic}",
                 "Hello world 1 -->"
                 "{dynamic}"
@@ -250,31 +264,36 @@ fn to_string_works() {
     }
 
     let mut dom = VirtualDom::new(app);
-    _ = dom.rebuild();
+    dom.rebuild(&mut dioxus_core::NoOpMutations);
 
     let mut renderer = Renderer::new();
     let out = renderer.render(&dom);
 
     for item in renderer.template_cache.iter() {
-        if item.1.segments.len() > 5 {
+        if item.1.segments.len() > 10 {
             assert_eq!(
                 item.1.segments,
                 vec![
-                    PreRendered("<div class=\"asdasdasd asdasdasd\"".into(),),
-                    Attr(0,),
+                    PreRendered("<div class=\"asdasdasd asdasdasd\"".to_string()),
+                    Attr(0),
                     StyleMarker {
-                        inside_style_tag: false,
+                        inside_style_tag: false
                     },
-                    PreRendered(">".into()),
+                    HydrationOnlySection(7), // jump to `>` if we don't need to hydrate
+                    PreRendered(" data-node-hydration=\"".to_string()),
+                    AttributeNodeMarker,
+                    PreRendered("\"".to_string()),
+                    PreRendered(">".to_string()),
                     InnerHtmlMarker,
-                    PreRendered("Hello world 1 --&gt;".into(),),
-                    Node(0,),
+                    PreRendered("Hello world 1 --&gt;".to_string()),
+                    Node(0),
                     PreRendered(
-                        "&lt;-- Hello world 2<div>nest 1</div><div></div><div>nest 2</div>".into(),
+                        "&lt;-- Hello world 2<div>nest 1</div><div></div><div>nest 2</div>"
+                            .to_string()
                     ),
-                    Node(1,),
-                    Node(2,),
-                    PreRendered("</div>".into(),),
+                    Node(1),
+                    Node(2),
+                    PreRendered("</div>".to_string())
                 ]
             );
         }
@@ -289,8 +308,8 @@ fn to_string_works() {
 fn empty_for_loop_works() {
     use dioxus::prelude::*;
 
-    fn app(cx: Scope) -> Element {
-        render! {
+    fn app() -> Element {
+        rsx! {
             div { class: "asdasdasd",
                 for _ in (0..5) {
 
@@ -300,7 +319,7 @@ fn empty_for_loop_works() {
     }
 
     let mut dom = VirtualDom::new(app);
-    _ = dom.rebuild();
+    dom.rebuild(&mut dioxus_core::NoOpMutations);
 
     let mut renderer = Renderer::new();
     let out = renderer.render(&dom);
@@ -310,14 +329,14 @@ fn empty_for_loop_works() {
             assert_eq!(
                 item.1.segments,
                 vec![
-                    PreRendered("<div class=\"asdasdasd\"".into(),),
-                    Attr(0,),
-                    StyleMarker {
-                        inside_style_tag: false,
-                    },
-                    PreRendered(">".into()),
-                    InnerHtmlMarker,
-                    PreRendered("</div>".into(),),
+                    PreRendered("<div class=\"asdasdasd\"".to_string()),
+                    HydrationOnlySection(5), // jump to `>` if we don't need to hydrate
+                    PreRendered(" data-node-hydration=\"".to_string()),
+                    RootNodeMarker,
+                    PreRendered("\"".to_string()),
+                    PreRendered(">".to_string()),
+                    Node(0),
+                    PreRendered("</div>".to_string())
                 ]
             );
         }
@@ -332,35 +351,12 @@ fn empty_for_loop_works() {
 fn empty_render_works() {
     use dioxus::prelude::*;
 
-    fn app(cx: Scope) -> Element {
-        render! {}
+    fn app() -> Element {
+        rsx! {}
     }
 
     let mut dom = VirtualDom::new(app);
-    _ = dom.rebuild();
-
-    let mut renderer = Renderer::new();
-    let out = renderer.render(&dom);
-
-    for item in renderer.template_cache.iter() {
-        if item.1.segments.len() > 5 {
-            assert_eq!(item.1.segments, vec![]);
-        }
-    }
-    assert_eq!(out, "");
-}
-
-#[test]
-fn empty_rsx_works() {
-    use dioxus::prelude::*;
-
-    fn app(_: Scope) -> Element {
-        rsx! {};
-        None
-    }
-
-    let mut dom = VirtualDom::new(app);
-    _ = dom.rebuild();
+    dom.rebuild(&mut dioxus_core::NoOpMutations);
 
     let mut renderer = Renderer::new();
     let out = renderer.render(&dom);
@@ -417,9 +413,12 @@ pub(crate) fn truthy(value: &AttributeValue) -> bool {
     }
 }
 
-pub(crate) fn write_attribute(buf: &mut impl Write, attr: &Attribute) -> std::fmt::Result {
+pub(crate) fn write_attribute<W: Write + ?Sized>(
+    buf: &mut W,
+    attr: &Attribute,
+) -> std::fmt::Result {
     let name = &attr.name;
-    match attr.value {
+    match &attr.value {
         AttributeValue::Text(value) => write!(buf, " {name}=\"{value}\""),
         AttributeValue::Bool(value) => write!(buf, " {name}={value}"),
         AttributeValue::Int(value) => write!(buf, " {name}={value}"),
@@ -428,8 +427,8 @@ pub(crate) fn write_attribute(buf: &mut impl Write, attr: &Attribute) -> std::fm
     }
 }
 
-pub(crate) fn write_value_unquoted(
-    buf: &mut impl Write,
+pub(crate) fn write_value_unquoted<W: Write + ?Sized>(
+    buf: &mut W,
     value: &AttributeValue,
 ) -> std::fmt::Result {
     match value {

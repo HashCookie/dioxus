@@ -1,116 +1,90 @@
-use dioxus_cli_config::DioxusConfig;
-use std::path::PathBuf;
+use std::env;
+use tracing_subscriber::{prelude::*, EnvFilter, Layer};
 
-use anyhow::anyhow;
+use anyhow::Context;
 use clap::Parser;
 use dioxus_cli::*;
 
-#[cfg(feature = "plugin")]
-use dioxus_cli::plugin::PluginManager;
-
 use Commands::*;
 
-fn get_bin(bin: Option<String>) -> Result<PathBuf> {
-    let metadata = cargo_metadata::MetadataCommand::new()
-        .exec()
-        .map_err(Error::CargoMetadata)?;
-    let package = if let Some(bin) = bin {
-        metadata
-            .workspace_packages()
-            .into_iter()
-            .find(|p| p.name == bin)
-            .ok_or(format!("no such package: {}", bin))
-            .map_err(Error::CargoError)?
-    } else {
-        metadata
-            .root_package()
-            .ok_or("no root package?".into())
-            .map_err(Error::CargoError)?
-    };
-
-    let crate_dir = package
-        .manifest_path
-        .parent()
-        .ok_or("couldn't take parent dir".into())
-        .map_err(Error::CargoError)?;
-
-    Ok(crate_dir.into())
-}
+const LOG_ENV: &str = "DIOXUS_LOG";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    set_up_logging();
+    build_tracing();
 
     match args.action {
         Translate(opts) => opts
             .translate()
-            .map_err(|e| anyhow!("🚫 Translation of HTML into RSX failed: {}", e)),
+            .context(error_wrapper("Translation of HTML into RSX failed")),
 
-        Create(opts) => opts
+        New(opts) => opts
             .create()
-            .map_err(|e| anyhow!("🚫 Creating new project failed: {}", e)),
+            .context(error_wrapper("Creating new project failed")),
+
+        Init(opts) => opts
+            .init()
+            .context(error_wrapper("Initializing a new project failed")),
 
         Config(opts) => opts
             .config()
-            .map_err(|e| anyhow!("🚫 Configuring new project failed: {}", e)),
-
-        #[cfg(feature = "plugin")]
-        Plugin(opts) => opts
-            .plugin()
-            .await
-            .map_err(|e| anyhow!("🚫 Error with plugin: {}", e)),
+            .context(error_wrapper("Configuring new project failed")),
 
         Autoformat(opts) => opts
             .autoformat()
-            .await
-            .map_err(|e| anyhow!("🚫 Error autoformatting RSX: {}", e)),
+            .context(error_wrapper("Error autoformatting RSX")),
 
         Check(opts) => opts
             .check()
             .await
-            .map_err(|e| anyhow!("🚫 Error checking RSX: {}", e)),
+            .context(error_wrapper("Error checking RSX")),
 
-        Version(opt) => {
-            let version = opt.version();
-            println!("{}", version);
+        Link(opts) => opts
+            .link()
+            .context(error_wrapper("Error with linker passthrough")),
 
-            Ok(())
-        }
-        action => {
-            let bin = get_bin(args.bin)?;
-            let _dioxus_config = DioxusConfig::load(Some(bin.clone()))
-                       .map_err(|e| anyhow!("Failed to load Dioxus config because: {e}"))?
-                       .unwrap_or_else(|| {
-                           log::info!("You appear to be creating a Dioxus project from scratch; we will use the default config");
-                           DioxusConfig::default()
-                    });
+        Build(mut opts) => opts
+            .run()
+            .await
+            .context(error_wrapper("Building project failed")),
 
-            #[cfg(feature = "plugin")]
-            PluginManager::init(_dioxus_config.plugin)
-                .map_err(|e| anyhow!("🚫 Plugin system initialization failed: {e}"))?;
+        Clean(opts) => opts
+            .clean()
+            .context(error_wrapper("Cleaning project failed")),
 
-            match action {
-                Build(opts) => opts
-                    .build(Some(bin.clone()), None)
-                    .map_err(|e| anyhow!("🚫 Building project failed: {}", e)),
+        Serve(opts) => opts
+            .serve()
+            .await
+            .context(error_wrapper("Serving project failed")),
 
-                Clean(opts) => opts
-                    .clean(Some(bin.clone()))
-                    .map_err(|e| anyhow!("🚫 Cleaning project failed: {}", e)),
-
-                Serve(opts) => opts
-                    .serve(Some(bin.clone()))
-                    .await
-                    .map_err(|e| anyhow!("🚫 Serving project failed: {}", e)),
-
-                Bundle(opts) => opts
-                    .bundle(Some(bin.clone()))
-                    .map_err(|e| anyhow!("🚫 Bundling project failed: {}", e)),
-
-                _ => unreachable!(),
-            }
-        }
+        Bundle(opts) => opts
+            .bundle()
+            .await
+            .context(error_wrapper("Bundling project failed")),
     }
+}
+
+/// Simplifies error messages that use the same pattern.
+fn error_wrapper(message: &str) -> String {
+    format!("🚫 {message}:")
+}
+
+fn build_tracing() {
+    // If {LOG_ENV} is set, default to env, otherwise filter to cli
+    // and manganis warnings and errors from other crates
+    let mut filter = EnvFilter::new("error,dx=info,dioxus-cli=info,manganis-cli-support=info");
+    if env::var(LOG_ENV).is_ok() {
+        filter = EnvFilter::from_env(LOG_ENV);
+    }
+
+    let sub =
+        tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_filter(filter));
+
+    #[cfg(feature = "tokio-console")]
+    sub.with(console_subscriber::spawn()).init();
+
+    #[cfg(not(feature = "tokio-console"))]
+    sub.init();
 }

@@ -1,4 +1,4 @@
-# `dioxus-hot-reload`: Hot Reloading Utilites for Dioxus
+# `dioxus-hot-reload`: Hot Reloading Utilities for Dioxus
 
 [![Crates.io][crates-badge]][crates-url]
 [![MIT licensed][mit-badge]][mit-url]
@@ -15,7 +15,7 @@
 [discord-url]: https://discord.gg/XgGxMSkvUM
 
 [Website](https://dioxuslabs.com) |
-[Guides](https://dioxuslabs.com/learn/0.4/) |
+[Guides](https://dioxuslabs.com/learn/0.5/) |
 [API Docs](https://docs.rs/dioxus-hot-reload/latest/dioxus_hot_reload) |
 [Chat](https://discord.gg/XgGxMSkvUM)
 
@@ -68,7 +68,7 @@ rsx! {
 
 ## Usage
 
-> This crate implements hot reloading for native compilation targets not WASM. For hot relaoding with the web renderer, see the [dioxus-cli](https://github.com/DioxusLabs/dioxus/tree/master/packages/cli) project.
+> This crate implements hot reloading for native compilation targets not WASM. For hot reloading with the web renderer, see the [dioxus-cli](https://github.com/DioxusLabs/dioxus/tree/master/packages/cli) project.
 
 Add this to the top of your main function on any renderer that supports hot reloading to start the hot reloading server:
 

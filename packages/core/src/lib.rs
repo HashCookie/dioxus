@@ -5,101 +5,97 @@
 
 mod any_props;
 mod arena;
-mod bump_frame;
-mod create;
 mod diff;
-mod dirty_scope;
+mod effect;
 mod error_boundary;
 mod events;
 mod fragment;
-mod lazynodes;
+mod generational_box;
+mod global_context;
 mod mutations;
 mod nodes;
 mod properties;
+mod reactive_context;
+mod render_error;
+mod root_wrapper;
 mod runtime;
 mod scheduler;
 mod scope_arena;
 mod scope_context;
 mod scopes;
+mod suspense;
+mod tasks;
 mod virtual_dom;
 
+mod hotreload_utils;
+
+/// Items exported from this module are used in macros and should not be used directly.
+#[doc(hidden)]
+pub mod internal {
+    pub use crate::properties::verify_component_called_as_component;
+
+    pub use crate::hotreload_utils::{
+        FmtSegment, FmtedSegments, HotReloadLiteral, HotreloadedLiteral,
+    };
+}
+
 pub(crate) mod innerlude {
+    pub(crate) use crate::any_props::*;
     pub use crate::arena::*;
-    pub use crate::dirty_scope::*;
+    pub(crate) use crate::effect::*;
     pub use crate::error_boundary::*;
     pub use crate::events::*;
     pub use crate::fragment::*;
-    pub use crate::lazynodes::*;
+    pub use crate::generational_box::*;
+    pub use crate::global_context::*;
     pub use crate::mutations::*;
-    pub use crate::nodes::RenderReturn;
     pub use crate::nodes::*;
     pub use crate::properties::*;
+    pub use crate::reactive_context::*;
+    pub use crate::render_error::*;
     pub use crate::runtime::{Runtime, RuntimeGuard};
     pub use crate::scheduler::*;
-    pub use crate::scope_context::*;
     pub use crate::scopes::*;
+    pub use crate::suspense::*;
+    pub use crate::tasks::*;
     pub use crate::virtual_dom::*;
 
-    /// An [`Element`] is a possibly-none [`VNode`] created by calling `render` on [`Scope`] or [`ScopeState`].
+    /// An [`Element`] is a possibly-none [`VNode`] created by calling `render` on [`ScopeId`] or [`ScopeState`].
     ///
     /// An Errored [`Element`] will propagate the error to the nearest error boundary.
-    pub type Element<'a> = Option<VNode<'a>>;
+    pub type Element = std::result::Result<VNode, RenderError>;
 
-    /// A [`Component`] is a function that takes a [`Scope`] and returns an [`Element`].
-    ///
-    /// Components can be used in other components with two syntax options:
-    /// - lowercase as a function call with named arguments (rust style)
-    /// - uppercase as an element (react style)
-    ///
-    /// ## Rust-Style
-    ///
-    /// ```rust, ignore
-    /// fn example(cx: Scope<Props>) -> Element {
-    ///     // ...
-    /// }
-    ///
-    /// rsx!(
-    ///     example()
-    /// )
-    /// ```
-    /// ## React-Style
-    /// ```rust, ignore
-    /// fn Example(cx: Scope<Props>) -> Element {
-    ///     // ...
-    /// }
-    ///
-    /// rsx!(
-    ///     Example {}
-    /// )
-    /// ```
-    pub type Component<P = ()> = fn(Scope<P>) -> Element;
+    /// A [`Component`] is a function that takes [`Properties`] and returns an [`Element`].
+    pub type Component<P = ()> = fn(P) -> Element;
 }
 
 pub use crate::innerlude::{
-    fc_to_builder, vdom_is_rendering, AnyValue, Attribute, AttributeType, AttributeValue,
-    BorrowedAttributeValue, CapturedError, Component, DynamicNode, Element, ElementId, Event,
-    Fragment, HasAttributes, IntoDynNode, LazyNodes, MountedAttribute, Mutation, Mutations,
-    Properties, RenderReturn, Scope, ScopeId, ScopeState, Scoped, TaskId, Template,
-    TemplateAttribute, TemplateNode, VComponent, VNode, VPlaceholder, VText, VirtualDom,
+    fc_to_builder, generation, schedule_update, schedule_update_any, use_hook, vdom_is_rendering,
+    AnyValue, Attribute, AttributeValue, CapturedError, Component, ComponentFunction, DynamicNode,
+    Element, ElementId, Event, Fragment, HasAttributes, IntoDynNode, MarkerWrapper, Mutation,
+    Mutations, NoOpMutations, Ok, Properties, RenderReturn, Result, Runtime, ScopeId, ScopeState,
+    SpawnIfAsync, Task, Template, TemplateAttribute, TemplateNode, VComponent, VNode, VNodeInner,
+    VPlaceholder, VText, VirtualDom, WriteMutations,
 };
 
 /// The purpose of this module is to alleviate imports of many common types
 ///
-/// This includes types like [`Scope`], [`Element`], and [`Component`].
+/// This includes types like [`Element`], and [`Component`].
 pub mod prelude {
     pub use crate::innerlude::{
-        consume_context, consume_context_from_scope, current_scope_id, fc_to_builder, has_context,
-        provide_context, provide_context_to_scope, provide_root_context, push_future,
-        remove_future, schedule_update_any, spawn, spawn_forever, suspend, use_error_boundary,
-        AnyValue, Attribute, AttributeType, Component, Element, ErrorBoundary, Event, EventHandler,
-        Fragment, HasAttributes, IntoAttributeValue, IntoDynNode, LazyNodes, MountedAttribute,
-        Properties, Runtime, RuntimeGuard, Scope, ScopeId, ScopeState, Scoped, TaskId, Template,
-        TemplateAttribute, TemplateNode, Throw, VNode, VirtualDom,
+        consume_context, consume_context_from_scope, current_owner, current_scope_id,
+        fc_to_builder, generation, has_context, needs_update, needs_update_any, parent_scope,
+        provide_context, provide_root_context, queue_effect, remove_future, schedule_update,
+        schedule_update_any, spawn, spawn_forever, spawn_isomorphic, suspend, throw_error,
+        try_consume_context, use_after_render, use_before_render, use_drop, use_error_boundary,
+        use_hook, use_hook_with_cleanup, with_owner, AnyValue, Attribute, Callback, Component,
+        ComponentFunction, Context, Element, ErrorBoundary, ErrorContext, Event, EventHandler,
+        Fragment, HasAttributes, IntoAttributeValue, IntoDynNode, OptionStringFromMarker,
+        Properties, ReactiveContext, RenderError, RenderReturn, Runtime, RuntimeGuard, ScopeId,
+        ScopeState, SuperFrom, SuperInto, SuspendedFuture, SuspenseBoundary, SuspenseBoundaryProps,
+        SuspenseContext, SuspenseExtension, Task, Template, TemplateAttribute, TemplateNode, VNode,
+        VNodeInner, VirtualDom,
     };
 }
 
-pub mod exports {
-    //! Important dependencies that are used by the rest of the library
-    //! Feel free to just add the dependencies in your own Crates.toml
-    pub use bumpalo;
-}
+pub use const_format;

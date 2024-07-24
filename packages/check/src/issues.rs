@@ -155,14 +155,15 @@ impl Display for IssueReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 #[allow(clippy::enum_variant_names)] // we'll add non-hook ones in the future
 /// Issues that might be found via static analysis of a Dioxus file.
 pub enum Issue {
-    /// https://dioxuslabs.com/learn/0.4/reference/hooks#no-hooks-in-conditionals
+    /// <https://dioxuslabs.com/learn/0.5/reference/hooks#no-hooks-in-conditionals>
     HookInsideConditional(HookInfo, ConditionalInfo),
-    /// https://dioxuslabs.com/learn/0.4/reference/hooks#no-hooks-in-loops
+    /// <https://dioxuslabs.com/learn/0.5/reference/hooks#no-hooks-in-loops>
     HookInsideLoop(HookInfo, AnyLoopInfo),
-    /// https://dioxuslabs.com/learn/0.4/reference/hooks#no-hooks-in-closures
+    /// <https://dioxuslabs.com/learn/0.5/reference/hooks#no-hooks-in-closures>
     HookInsideClosure(HookInfo, ClosureInfo),
     HookOutsideComponent(HookInfo),
 }
@@ -230,9 +231,9 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     if you_are_happy && you_know_it {
-                        let something = use_state(cx, || "hands");
+                        let something = use_signal(|| "hands");
                         println!("clap your {something}")
                     }
                 }
@@ -240,11 +241,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called conditionally: `use_state` (inside `if`)
+            error: hook called conditionally: `use_signal` (inside `if`)
               --> src/main.rs:3:25
               |
-            3 |         let something = use_state(cx, || "hands");
-              |                         ^^^^^^^^^
+            3 |         let something = use_signal(|| "hands");
+              |                         ^^^^^^^^^^
               |
               = note: `if you_are_happy && you_know_it { … }` is the conditional
         "#};
@@ -258,10 +259,10 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     match you_are_happy && you_know_it {
                         true => {
-                            let something = use_state(cx, || "hands");
+                            let something = use_signal(|| "hands");
                             println!("clap your {something}")
                         }
                         _ => {}
@@ -271,11 +272,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called conditionally: `use_state` (inside `match`)
+            error: hook called conditionally: `use_signal` (inside `match`)
               --> src/main.rs:4:29
               |
-            4 |             let something = use_state(cx, || "hands");
-              |                             ^^^^^^^^^
+            4 |             let something = use_signal(|| "hands");
+              |                             ^^^^^^^^^^
               |
               = note: `match you_are_happy && you_know_it { … }` is the conditional
         "#};
@@ -289,9 +290,9 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     for i in 0..10 {
-                        let something = use_state(cx, || "hands");
+                        let something = use_signal(|| "hands");
                         println!("clap your {something}")
                     }
                 }
@@ -299,11 +300,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called in a loop: `use_state` (inside `for` loop)
+            error: hook called in a loop: `use_signal` (inside `for` loop)
               --> src/main.rs:3:25
               |
-            3 |         let something = use_state(cx, || "hands");
-              |                         ^^^^^^^^^
+            3 |         let something = use_signal(|| "hands");
+              |                         ^^^^^^^^^^
               |
               = note: `for i in 0..10 { … }` is the loop
         "#};
@@ -317,9 +318,9 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     while check_thing() {
-                        let something = use_state(cx, || "hands");
+                        let something = use_signal(|| "hands");
                         println!("clap your {something}")
                     }
                 }
@@ -327,11 +328,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called in a loop: `use_state` (inside `while` loop)
+            error: hook called in a loop: `use_signal` (inside `while` loop)
               --> src/main.rs:3:25
               |
-            3 |         let something = use_state(cx, || "hands");
-              |                         ^^^^^^^^^
+            3 |         let something = use_signal(|| "hands");
+              |                         ^^^^^^^^^^
               |
               = note: `while check_thing() { … }` is the loop
         "#};
@@ -345,9 +346,9 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     loop {
-                        let something = use_state(cx, || "hands");
+                        let something = use_signal(|| "hands");
                         println!("clap your {something}")
                     }
                 }
@@ -355,11 +356,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called in a loop: `use_state` (inside `loop`)
+            error: hook called in a loop: `use_signal` (inside `loop`)
               --> src/main.rs:3:25
               |
-            3 |         let something = use_state(cx, || "hands");
-              |                         ^^^^^^^^^
+            3 |         let something = use_signal(|| "hands");
+              |                         ^^^^^^^^^^
               |
               = note: `loop { … }` is the loop
         "#};
@@ -373,9 +374,9 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     let something = || {
-                        let something = use_state(cx, || "hands");
+                        let something = use_signal(|| "hands");
                         println!("clap your {something}")
                     };
                 }
@@ -383,11 +384,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called in a closure: `use_state`
+            error: hook called in a closure: `use_signal`
               --> src/main.rs:3:25
               |
-            3 |         let something = use_state(cx, || "hands");
-              |                         ^^^^^^^^^
+            3 |         let something = use_signal(|| "hands");
+              |                         ^^^^^^^^^^
         "#};
 
         assert_eq!(expected, issue_report.to_string());
@@ -399,9 +400,9 @@ mod tests {
         let issue_report = check_file(
             "src/main.rs".into(),
             indoc! {r#"
-                fn App(cx: Scope) -> Element {
+                fn App() -> Element {
                     if you_are_happy && you_know_it {
-                        let something = use_state(cx, || {
+                        let something = use_signal(|| {
                             "hands"
                         });
                         println!("clap your {something}")
@@ -411,11 +412,11 @@ mod tests {
         );
 
         let expected = indoc! {r#"
-            error: hook called conditionally: `use_state` (inside `if`)
+            error: hook called conditionally: `use_signal` (inside `if`)
               --> src/main.rs:3:25
               |
-            3 |         let something = use_state(cx, || {
-              |                         ^^^^^^^^^
+            3 |         let something = use_signal(|| {
+              |                         ^^^^^^^^^^
             4 |             "hands"
             5 |         });
               |

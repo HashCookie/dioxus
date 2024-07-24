@@ -1,4 +1,5 @@
-use dioxus_cli_config::crate_root;
+use crate::build::TargetArgs;
+use crate::{metadata::crate_root, CliSettings};
 
 use super::*;
 
@@ -24,6 +25,33 @@ pub enum Config {
     FormatPrint {},
     /// Create a custom html file.
     CustomHtml {},
+
+    /// Set global cli settings.
+    SetGlobal { setting: Setting, value: Value },
+}
+
+#[derive(Debug, Clone, Deserialize, clap::ValueEnum)]
+pub enum Setting {
+    /// Set the value of the always-hot-reload setting.
+    AlwaysHotReload,
+    /// Set the value of the always-open-browser setting.
+    AlwaysOpenBrowser,
+}
+
+// NOTE: Unsure of an alternative to get the desired behavior with clap, if it exists.
+#[derive(Debug, Clone, Deserialize, clap::ValueEnum)]
+pub enum Value {
+    True,
+    False,
+}
+
+impl From<Value> for bool {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::True => true,
+            Value::False => false,
+        }
+    }
 }
 
 impl Config {
@@ -37,30 +65,36 @@ impl Config {
             } => {
                 let conf_path = crate_root.join("Dioxus.toml");
                 if conf_path.is_file() && !force {
-                    log::warn!(
+                    tracing::warn!(
                         "config file `Dioxus.toml` already exist, use `--force` to overwrite it."
                     );
                     return Ok(());
                 }
                 let mut file = File::create(conf_path)?;
-                let content = String::from(include_str!("../assets/dioxus.toml"))
+                let content = String::from(include_str!("../../assets/dioxus.toml"))
                     .replace("{{project-name}}", &name)
                     .replace("{{default-platform}}", &platform);
                 file.write_all(content.as_bytes())?;
-                log::info!("🚩 Init config file completed.");
+                tracing::info!("🚩 Init config file completed.");
             }
             Config::FormatPrint {} => {
                 println!(
                     "{:#?}",
-                    dioxus_cli_config::CrateConfig::new(None)?.dioxus_config
+                    crate::dioxus_crate::DioxusCrate::new(&TargetArgs::default())?.dioxus_config
                 );
             }
             Config::CustomHtml {} => {
                 let html_path = crate_root.join("index.html");
                 let mut file = File::create(html_path)?;
-                let content = include_str!("../assets/index.html");
+                let content = include_str!("../../assets/index.html");
                 file.write_all(content.as_bytes())?;
-                log::info!("🚩 Create custom html file done.");
+                tracing::info!("🚩 Create custom html file done.");
+            }
+            Config::SetGlobal { setting, value } => {
+                CliSettings::modify_settings(|settings| match setting {
+                    Setting::AlwaysHotReload => settings.always_hot_reload = Some(value.into()),
+                    Setting::AlwaysOpenBrowser => settings.always_open_browser = Some(value.into()),
+                })?;
             }
         }
         Ok(())

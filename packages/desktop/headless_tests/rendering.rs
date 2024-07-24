@@ -1,67 +1,51 @@
 use dioxus::prelude::*;
 use dioxus_desktop::DesktopContext;
 
-pub(crate) fn check_app_exits(app: Component) {
-    use dioxus_desktop::Config;
-    use tao::window::WindowBuilder;
-    // This is a deadman's switch to ensure that the app exits
-    let should_panic = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let should_panic_clone = should_panic.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(100));
-        if should_panic_clone.load(std::sync::atomic::Ordering::SeqCst) {
-            std::process::exit(exitcode::SOFTWARE);
-        }
-    });
-
-    dioxus_desktop::launch_cfg(
-        app,
-        Config::new().with_window(WindowBuilder::new().with_visible(true)),
-    );
-
-    should_panic.store(false, std::sync::atomic::Ordering::SeqCst);
-}
+#[path = "./utils.rs"]
+mod utils;
 
 fn main() {
-    check_app_exits(check_html_renders);
+    #[cfg(not(windows))]
+    utils::check_app_exits(check_html_renders);
 }
 
-fn use_inner_html(cx: &ScopeState, id: &'static str) -> Option<String> {
-    let eval_provider = use_eval(cx);
+fn use_inner_html(id: &'static str) -> Option<String> {
+    let mut value = use_signal(|| None as Option<String>);
 
-    let value: &UseRef<Option<String>> = use_ref(cx, || None);
-    use_effect(cx, (), |_| {
-        to_owned![value, eval_provider];
-        async move {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let html = eval_provider(&format!(
+    use_effect(move || {
+        spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let res = eval(&format!(
                 r#"let element = document.getElementById('{}');
-                    return element.innerHTML"#,
+                return element.innerHTML"#,
                 id
             ))
+            .await
             .unwrap();
-            if let Ok(serde_json::Value::String(html)) = html.await {
+
+            if let Some(html) = res.as_str() {
                 println!("html: {}", html);
-                value.set(Some(html));
+                value.set(Some(html.to_string()));
             }
-        }
+        });
     });
-    value.read().clone()
+
+    value()
 }
 
-const EXPECTED_HTML: &str = r#"<div id="5" style="width: 100px; height: 100px; color: rgb(0, 0, 0);"><input type="checkbox"><h1>text</h1><div><p>hello world</p></div></div>"#;
+const EXPECTED_HTML: &str = r#"<div style="width: 100px; height: 100px; color: rgb(0, 0, 0);" id="5"><input type="checkbox"><h1>text</h1><div><p>hello world</p></div></div>"#;
 
-fn check_html_renders(cx: Scope) -> Element {
-    let inner_html = use_inner_html(cx, "main_div");
+fn check_html_renders() -> Element {
+    let inner_html = use_inner_html("main_div");
 
-    let desktop_context: DesktopContext = cx.consume_context().unwrap();
+    let desktop_context: DesktopContext = consume_context();
 
     if let Some(raw_html) = inner_html {
         println!("{}", raw_html);
-        let fragment = scraper::Html::parse_fragment(&raw_html);
-        println!("fragment: {}", fragment.html());
-        let expected = scraper::Html::parse_fragment(EXPECTED_HTML);
-        println!("expected: {}", expected.html());
+        let fragment = &raw_html;
+        let expected = EXPECTED_HTML;
+        assert_eq!(raw_html, EXPECTED_HTML);
         if fragment == expected {
             println!("html matches");
             desktop_context.close();
@@ -69,26 +53,17 @@ fn check_html_renders(cx: Scope) -> Element {
     }
 
     let dyn_value = 0;
-    let dyn_element = rsx! {
-        div {
-            dangerous_inner_html: "<p>hello world</p>",
-        }
-    };
+    let dyn_element = rsx! { div { dangerous_inner_html: "<p>hello world</p>" } };
 
-    render! {
-        div {
-            id: "main_div",
+    rsx! {
+        div { id: "main_div",
             div {
                 width: "100px",
                 height: "100px",
                 color: "rgb({dyn_value}, {dyn_value}, {dyn_value})",
                 id: 5,
-                input {
-                    "type": "checkbox",
-                },
-                h1 {
-                    "text"
-                }
+                input { "type": "checkbox" }
+                h1 { "text" }
                 {dyn_element}
             }
         }

@@ -1,161 +1,350 @@
 //! A shared pool of renderers for efficient server side rendering.
-
-use std::sync::Arc;
-
-use crate::server_context::SERVER_CONTEXT;
-use dioxus::prelude::VirtualDom;
+use crate::streaming::StreamingRenderer;
+use dioxus_interpreter_js::INITIALIZE_STREAMING_JS;
 use dioxus_ssr::{
-    incremental::{IncrementalRendererConfig, RenderFreshness, WrapBody},
+    incremental::{CachedRender, RenderFreshness},
     Renderer,
 };
-use serde::Serialize;
+use futures_channel::mpsc::Sender;
+use futures_util::{Stream, StreamExt};
 use std::sync::RwLock;
-use tokio::task::spawn_blocking;
+use std::{collections::HashMap, future::Future};
+use std::{fmt::Write, sync::Arc};
+use tokio::task::JoinHandle;
 
 use crate::prelude::*;
-use dioxus::prelude::*;
+use dioxus_lib::prelude::*;
 
-enum SsrRendererPool {
-    Renderer(RwLock<Vec<Renderer>>),
-    Incremental(RwLock<Vec<dioxus_ssr::incremental::IncrementalRenderer>>),
+fn spawn_platform<Fut>(f: impl FnOnce() -> Fut + Send + 'static) -> JoinHandle<Fut::Output>
+where
+    Fut: Future + 'static,
+    Fut::Output: Send + 'static,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use tokio_util::task::LocalPoolHandle;
+        static TASK_POOL: std::sync::OnceLock<LocalPoolHandle> = std::sync::OnceLock::new();
+
+        let pool = TASK_POOL.get_or_init(|| {
+            let threads = std::thread::available_parallelism()
+                .unwrap_or(std::num::NonZeroUsize::new(1).unwrap());
+            LocalPoolHandle::new(threads.into())
+        });
+
+        pool.spawn_pinned(f)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        tokio::task::spawn_local(f())
+    }
+}
+
+struct SsrRendererPool {
+    renderers: RwLock<Vec<Renderer>>,
+    incremental_cache: Option<RwLock<dioxus_ssr::incremental::IncrementalRenderer>>,
 }
 
 impl SsrRendererPool {
-    async fn render_to<P: Clone + Serialize + Send + Sync + 'static>(
-        &self,
-        cfg: &ServeConfig<P>,
-        route: String,
-        component: Component<P>,
-        props: P,
-        server_context: &DioxusServerContext,
-    ) -> Result<(RenderFreshness, String), dioxus_ssr::incremental::IncrementalRendererError> {
-        let wrapper = FullstackRenderer {
-            cfg: cfg.clone(),
-            server_context: server_context.clone(),
-        };
-        match self {
-            Self::Renderer(pool) => {
-                let server_context = Box::new(server_context.clone());
-                let mut renderer = pool.write().unwrap().pop().unwrap_or_else(pre_renderer);
-
-                let (tx, rx) = tokio::sync::oneshot::channel();
-
-                spawn_blocking(move || {
-                    tokio::runtime::Runtime::new()
-                        .expect("couldn't spawn runtime")
-                        .block_on(async move {
-                            let mut vdom = VirtualDom::new_with_props(component, props);
-                            // Make sure the evaluator is initialized
-                            dioxus_ssr::eval::init_eval(vdom.base_scope());
-                            let mut to = WriteBuffer { buffer: Vec::new() };
-                            // before polling the future, we need to set the context
-                            let prev_context =
-                                SERVER_CONTEXT.with(|ctx| ctx.replace(server_context));
-                            // poll the future, which may call server_context()
-                            tracing::info!("Rebuilding vdom");
-                            let _ = vdom.rebuild();
-                            vdom.wait_for_suspense().await;
-                            tracing::info!("Suspense resolved");
-                            // after polling the future, we need to restore the context
-                            SERVER_CONTEXT.with(|ctx| ctx.replace(prev_context));
-
-                            if let Err(err) = wrapper.render_before_body(&mut *to) {
-                                let _ = tx.send(Err(err));
-                                return;
-                            }
-                            if let Err(err) = renderer.render_to(&mut to, &vdom) {
-                                let _ = tx.send(Err(
-                                    dioxus_ssr::incremental::IncrementalRendererError::RenderError(
-                                        err,
-                                    ),
-                                ));
-                                return;
-                            }
-                            if let Err(err) = wrapper.render_after_body(&mut *to) {
-                                let _ = tx.send(Err(err));
-                                return;
-                            }
-                            match String::from_utf8(to.buffer) {
-                                Ok(html) => {
-                                    let _ =
-                                        tx.send(Ok((renderer, RenderFreshness::now(None), html)));
-                                }
-                                Err(err) => {
-                                    dioxus_ssr::incremental::IncrementalRendererError::Other(
-                                        Box::new(err),
-                                    );
-                                }
-                            }
-                        });
-                });
-                let (renderer, freshness, html) = rx.await.unwrap()?;
-                pool.write().unwrap().push(renderer);
-                Ok((freshness, html))
-            }
-            Self::Incremental(pool) => {
-                let mut renderer =
-                    pool.write().unwrap().pop().unwrap_or_else(|| {
-                        incremental_pre_renderer(cfg.incremental.as_ref().unwrap())
-                    });
-
-                let (tx, rx) = tokio::sync::oneshot::channel();
-
-                let server_context = server_context.clone();
-                spawn_blocking(move || {
-                    tokio::runtime::Runtime::new()
-                        .expect("couldn't spawn runtime")
-                        .block_on(async move {
-                            let mut to = WriteBuffer { buffer: Vec::new() };
-                            match renderer
-                                .render(
-                                    route,
-                                    component,
-                                    props,
-                                    &mut *to,
-                                    |vdom| {
-                                        Box::pin(async move {
-                                            // before polling the future, we need to set the context
-                                            let prev_context = SERVER_CONTEXT
-                                                .with(|ctx| ctx.replace(Box::new(server_context)));
-                                            // poll the future, which may call server_context()
-                                            tracing::info!("Rebuilding vdom");
-                                            let _ = vdom.rebuild();
-                                            vdom.wait_for_suspense().await;
-                                            tracing::info!("Suspense resolved");
-                                            // after polling the future, we need to restore the context
-                                            SERVER_CONTEXT.with(|ctx| ctx.replace(prev_context));
-                                        })
-                                    },
-                                    &wrapper,
-                                )
-                                .await
-                            {
-                                Ok(freshness) => {
-                                    match String::from_utf8(to.buffer).map_err(|err| {
-                                        dioxus_ssr::incremental::IncrementalRendererError::Other(
-                                            Box::new(err),
-                                        )
-                                    }) {
-                                        Ok(html) => {
-                                            let _ = tx.send(Ok((freshness, html)));
-                                        }
-                                        Err(err) => {
-                                            let _ = tx.send(Err(err));
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    let _ = tx.send(Err(err));
-                                }
-                            }
-                        })
-                });
-                let (freshness, html) = rx.await.unwrap()?;
-
-                Ok((freshness, html))
-            }
+    fn new(
+        initial_size: usize,
+        incremental: Option<dioxus_ssr::incremental::IncrementalRendererConfig>,
+    ) -> Self {
+        let renderers = RwLock::new((0..initial_size).map(|_| pre_renderer()).collect());
+        Self {
+            renderers,
+            incremental_cache: incremental.map(|cache| RwLock::new(cache.build())),
         }
     }
+
+    fn check_cached_route(
+        &self,
+        route: &str,
+        render_into: &mut Sender<Result<String, dioxus_ssr::incremental::IncrementalRendererError>>,
+    ) -> Option<RenderFreshness> {
+        if let Some(incremental) = &self.incremental_cache {
+            if let Ok(mut incremental) = incremental.write() {
+                match incremental.get(route) {
+                    Ok(Some(cached_render)) => {
+                        let CachedRender {
+                            freshness,
+                            response,
+                            ..
+                        } = cached_render;
+                        _ = render_into.start_send(String::from_utf8(response.to_vec()).map_err(
+                            |err| {
+                                dioxus_ssr::incremental::IncrementalRendererError::Other(Box::new(
+                                    err,
+                                ))
+                            },
+                        ));
+                        return Some(freshness);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to get route \"{route}\" from incremental cache: {e}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    async fn render_to(
+        self: Arc<Self>,
+        cfg: &ServeConfig,
+        route: String,
+        virtual_dom_factory: impl FnOnce() -> VirtualDom + Send + Sync + 'static,
+        server_context: &DioxusServerContext,
+    ) -> Result<
+        (
+            RenderFreshness,
+            impl Stream<Item = Result<String, dioxus_ssr::incremental::IncrementalRendererError>>,
+        ),
+        dioxus_ssr::incremental::IncrementalRendererError,
+    > {
+        struct ReceiverWithDrop {
+            receiver: futures_channel::mpsc::Receiver<
+                Result<String, dioxus_ssr::incremental::IncrementalRendererError>,
+            >,
+            cancel_task: Option<tokio::task::JoinHandle<()>>,
+        }
+
+        impl Stream for ReceiverWithDrop {
+            type Item = Result<String, dioxus_ssr::incremental::IncrementalRendererError>;
+
+            fn poll_next(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<Self::Item>> {
+                self.receiver.poll_next_unpin(cx)
+            }
+        }
+
+        // When we drop the stream, we need to cancel the task that is feeding values to the stream
+        impl Drop for ReceiverWithDrop {
+            fn drop(&mut self) {
+                if let Some(cancel_task) = self.cancel_task.take() {
+                    cancel_task.abort();
+                }
+            }
+        }
+
+        let (mut into, rx) = futures_channel::mpsc::channel::<
+            Result<String, dioxus_ssr::incremental::IncrementalRendererError>,
+        >(1000);
+
+        // before we even spawn anything, we can check synchronously if we have the route cached
+        if let Some(freshness) = self.check_cached_route(&route, &mut into) {
+            return Ok((
+                freshness,
+                ReceiverWithDrop {
+                    receiver: rx,
+                    cancel_task: None,
+                },
+            ));
+        }
+
+        let wrapper = FullstackHTMLTemplate { cfg: cfg.clone() };
+
+        let server_context = server_context.clone();
+        let mut renderer = self
+            .renderers
+            .write()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(pre_renderer);
+
+        let myself = self.clone();
+
+        let join_handle = spawn_platform(move || async move {
+            let mut virtual_dom = virtual_dom_factory();
+            #[cfg(feature = "document")]
+            let document = std::rc::Rc::new(crate::document::server::ServerDocument::default());
+            #[cfg(feature = "document")]
+            virtual_dom.provide_root_context(document.clone() as std::rc::Rc<dyn Document>);
+
+            // poll the future, which may call server_context()
+            tracing::info!("Rebuilding vdom");
+            with_server_context(server_context.clone(), || virtual_dom.rebuild_in_place());
+
+            let mut pre_body = String::new();
+
+            if let Err(err) = wrapper.render_head(&mut pre_body) {
+                _ = into.start_send(Err(err));
+                return;
+            }
+
+            #[cfg(feature = "document")]
+            {
+                // Collect any head content from the document provider and inject that into the head
+                if let Err(err) = document.render(&mut pre_body, &mut renderer) {
+                    _ = into.start_send(Err(err.into()));
+                    return;
+                }
+
+                // Enable a warning when inserting contents into the head during streaming
+                document.start_streaming();
+            }
+
+            if let Err(err) = wrapper.render_before_body(&mut pre_body) {
+                _ = into.start_send(Err(err));
+                return;
+            }
+            if let Err(err) = write!(&mut pre_body, "<script>{INITIALIZE_STREAMING_JS}</script>") {
+                _ = into.start_send(Err(
+                    dioxus_ssr::incremental::IncrementalRendererError::RenderError(err),
+                ));
+                return;
+            }
+
+            let stream = Arc::new(StreamingRenderer::new(pre_body, into));
+            let scope_to_mount_mapping = Arc::new(RwLock::new(HashMap::new()));
+
+            renderer.pre_render = true;
+            {
+                let scope_to_mount_mapping = scope_to_mount_mapping.clone();
+                let stream = stream.clone();
+                renderer.set_render_components(move |renderer, to, vdom, scope| {
+                    let is_suspense_boundary =
+                        SuspenseContext::downcast_suspense_boundary_from_scope(
+                            &vdom.runtime(),
+                            scope,
+                        )
+                        .filter(|s| s.has_suspended_tasks())
+                        .is_some();
+                    if is_suspense_boundary {
+                        let mount = stream.render_placeholder(
+                            |to| renderer.render_scope(to, vdom, scope),
+                            &mut *to,
+                        )?;
+                        scope_to_mount_mapping.write().unwrap().insert(scope, mount);
+                    } else {
+                        renderer.render_scope(to, vdom, scope)?
+                    }
+                    Ok(())
+                });
+            }
+
+            macro_rules! throw_error {
+                ($e:expr) => {
+                    stream.close_with_error($e);
+                    return;
+                };
+            }
+
+            // Render the initial frame with loading placeholders
+            let mut initial_frame = renderer.render(&virtual_dom);
+
+            // Collect the initial server data from the root node. For most apps, no use_server_futures will be resolved initially, so this will be full on `None`s.
+            // Sending down those Nones are still important to tell the client not to run the use_server_futures that are already running on the backend
+            let resolved_data = serialize_server_data(&virtual_dom, ScopeId::ROOT);
+            initial_frame.push_str(&format!(
+                r#"<script>window.initial_dioxus_hydration_data="{resolved_data}";</script>"#,
+            ));
+
+            // Along with the initial frame, we render the html after the main element, but before the body tag closes. This should include the script that starts loading the wasm bundle.
+            if let Err(err) = wrapper.render_after_main(&mut initial_frame) {
+                throw_error!(err);
+            }
+            stream.render(initial_frame);
+
+            // After the initial render, we need to resolve suspense
+            while virtual_dom.suspended_tasks_remaining() {
+                ProvideServerContext::new(
+                    virtual_dom.wait_for_suspense_work(),
+                    server_context.clone(),
+                )
+                .await;
+                let resolved_suspense_nodes = ProvideServerContext::new(
+                    virtual_dom.render_suspense_immediate(),
+                    server_context.clone(),
+                )
+                .await;
+
+                // Just rerender the resolved nodes
+                for scope in resolved_suspense_nodes {
+                    let mount = {
+                        let mut lock = scope_to_mount_mapping.write().unwrap();
+                        lock.remove(&scope)
+                    };
+                    // If the suspense boundary was immediately removed, it may not have a mount. We can just skip resolving it
+                    if let Some(mount) = mount {
+                        let mut resolved_chunk = String::new();
+                        // After we replace the placeholder in the dom with javascript, we need to send down the resolved data so that the client can hydrate the node
+                        let render_suspense = |into: &mut String| {
+                            renderer.reset_hydration();
+                            renderer.render_scope(into, &virtual_dom, scope)
+                        };
+                        let resolved_data = serialize_server_data(&virtual_dom, scope);
+                        if let Err(err) = stream.replace_placeholder(
+                            mount,
+                            render_suspense,
+                            resolved_data,
+                            &mut resolved_chunk,
+                        ) {
+                            throw_error!(
+                                dioxus_ssr::incremental::IncrementalRendererError::RenderError(err)
+                            );
+                        }
+
+                        stream.render(resolved_chunk);
+                    }
+                    // Freeze the suspense boundary to prevent future reruns of any child nodes of the suspense boundary
+                    if let Some(suspense) = SuspenseContext::downcast_suspense_boundary_from_scope(
+                        &virtual_dom.runtime(),
+                        scope,
+                    ) {
+                        suspense.freeze();
+                    }
+                }
+            }
+
+            // After suspense is done, we render the html after the body
+            let mut post_streaming = String::new();
+
+            if let Err(err) = wrapper.render_after_body(&mut post_streaming) {
+                throw_error!(err);
+            }
+
+            // If incremental rendering is enabled, add the new render to the cache without the streaming bits
+            if let Some(incremental) = &self.incremental_cache {
+                let mut cached_render = String::new();
+                if let Err(err) = wrapper.render_before_body(&mut cached_render) {
+                    throw_error!(err);
+                }
+                cached_render.push_str(&post_streaming);
+
+                if let Ok(mut incremental) = incremental.write() {
+                    let _ = incremental.cache(route, cached_render);
+                }
+            }
+
+            stream.render(post_streaming);
+
+            renderer.reset_render_components();
+            myself.renderers.write().unwrap().push(renderer);
+        });
+
+        Ok((
+            RenderFreshness::now(None),
+            ReceiverWithDrop {
+                receiver: rx,
+                cancel_task: Some(join_handle),
+            },
+        ))
+    }
+}
+
+fn serialize_server_data(virtual_dom: &VirtualDom, scope: ScopeId) -> String {
+    // After we replace the placeholder in the dom with javascript, we need to send down the resolved data so that the client can hydrate the node
+    // Extract any data we serialized for hydration (from server futures)
+    let html_data =
+        crate::html_storage::HTMLData::extract_from_suspense_boundary(virtual_dom, scope);
+
+    // serialize the server state into a base64 string
+    html_data.serialized()
 }
 
 /// State used in server side rendering. This utilizes a pool of [`dioxus_ssr::Renderer`]s to cache static templates between renders.
@@ -167,220 +356,98 @@ pub struct SSRState {
 
 impl SSRState {
     /// Create a new [`SSRState`].
-    pub fn new<P: Clone>(cfg: &ServeConfig<P>) -> Self {
-        if cfg.incremental.is_some() {
-            return Self {
-                renderers: Arc::new(SsrRendererPool::Incremental(RwLock::new(vec![
-                    incremental_pre_renderer(cfg.incremental.as_ref().unwrap()),
-                    incremental_pre_renderer(cfg.incremental.as_ref().unwrap()),
-                    incremental_pre_renderer(cfg.incremental.as_ref().unwrap()),
-                    incremental_pre_renderer(cfg.incremental.as_ref().unwrap()),
-                ]))),
-            };
-        }
-
+    pub fn new(cfg: &ServeConfig) -> Self {
         Self {
-            renderers: Arc::new(SsrRendererPool::Renderer(RwLock::new(vec![
-                pre_renderer(),
-                pre_renderer(),
-                pre_renderer(),
-                pre_renderer(),
-            ]))),
+            renderers: Arc::new(SsrRendererPool::new(4, cfg.incremental.clone())),
         }
     }
 
     /// Render the application to HTML.
-    pub fn render<'a, P: 'static + Clone + serde::Serialize + Send + Sync>(
+    pub async fn render<'a>(
         &'a self,
         route: String,
-        cfg: &'a ServeConfig<P>,
+        cfg: &'a ServeConfig,
+        virtual_dom_factory: impl FnOnce() -> VirtualDom + Send + Sync + 'static,
         server_context: &'a DioxusServerContext,
-    ) -> impl std::future::Future<
-        Output = Result<RenderResponse, dioxus_ssr::incremental::IncrementalRendererError>,
-    > + Send
-           + 'a {
-        async move {
-            let ServeConfig { app, props, .. } = cfg;
-
-            let (freshness, html) = self
-                .renderers
-                .render_to(cfg, route, *app, props.clone(), server_context)
-                .await?;
-
-            Ok(RenderResponse { html, freshness })
-        }
+    ) -> Result<
+        (
+            RenderFreshness,
+            impl Stream<Item = Result<String, dioxus_ssr::incremental::IncrementalRendererError>>,
+        ),
+        dioxus_ssr::incremental::IncrementalRendererError,
+    > {
+        self.renderers
+            .clone()
+            .render_to(cfg, route, virtual_dom_factory, server_context)
+            .await
     }
 }
 
-struct FullstackRenderer<P: Clone + Send + Sync + 'static> {
-    cfg: ServeConfig<P>,
-    server_context: DioxusServerContext,
+/// The template that wraps the body of the HTML for a fullstack page. This template contains the data needed to hydrate server functions that were run on the server.
+#[derive(Default)]
+pub struct FullstackHTMLTemplate {
+    cfg: ServeConfig,
 }
 
-impl<P: Clone + Serialize + Send + Sync + 'static> dioxus_ssr::incremental::WrapBody
-    for FullstackRenderer<P>
-{
-    fn render_before_body<R: std::io::Write>(
+impl FullstackHTMLTemplate {
+    /// Create a new [`FullstackHTMLTemplate`].
+    pub fn new(cfg: &ServeConfig) -> Self {
+        Self { cfg: cfg.clone() }
+    }
+}
+
+impl FullstackHTMLTemplate {
+    /// Render any content before the head of the page.
+    pub fn render_head<R: std::fmt::Write>(
         &self,
         to: &mut R,
     ) -> Result<(), dioxus_ssr::incremental::IncrementalRendererError> {
         let ServeConfig { index, .. } = &self.cfg;
 
-        to.write_all(index.pre_main.as_bytes())?;
+        to.write_str(&index.head)?;
 
         Ok(())
     }
 
-    fn render_after_body<R: std::io::Write>(
+    /// Render any content before the body of the page.
+    pub fn render_before_body<R: std::fmt::Write>(
         &self,
         to: &mut R,
     ) -> Result<(), dioxus_ssr::incremental::IncrementalRendererError> {
-        // serialize the props
-        crate::html_storage::serialize::encode_props_in_element(&self.cfg.props, to).map_err(
-            |err| dioxus_ssr::incremental::IncrementalRendererError::Other(Box::new(err)),
-        )?;
-        // serialize the server state
-        crate::html_storage::serialize::encode_in_element(
-            &*self.server_context.html_data().map_err(|_| {
-                dioxus_ssr::incremental::IncrementalRendererError::Other(Box::new({
-                    #[derive(Debug)]
-                    struct HTMLDataReadError;
-
-                    impl std::fmt::Display for HTMLDataReadError {
-                        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                            f.write_str(
-                                "Failed to read the server data to serialize it into the HTML",
-                            )
-                        }
-                    }
-
-                    impl std::error::Error for HTMLDataReadError {}
-
-                    HTMLDataReadError
-                }))
-            })?,
-            to,
-        )
-        .map_err(|err| dioxus_ssr::incremental::IncrementalRendererError::Other(Box::new(err)))?;
-
-        #[cfg(all(debug_assertions, feature = "hot-reload"))]
-        {
-            // In debug mode, we need to add a script to the page that will reload the page if the websocket disconnects to make full recompile hot reloads work
-            let disconnect_js = r#"(function () {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = protocol + '//' + window.location.host + '/_dioxus/disconnect';
-    const poll_interval = 1000;
-    const reload_upon_connect = () => {
-        console.log('Disconnected from server. Attempting to reconnect...');
-        window.setTimeout(
-            () => {
-                // Try to reconnect to the websocket
-                const ws = new WebSocket(url);
-                ws.onopen = () => {
-                    // If we reconnect, reload the page
-                    window.location.reload();
-                }
-                // Otherwise, try again in a second
-                reload_upon_connect();
-            },
-            poll_interval);
-    };
-
-    // on initial page load connect to the disconnect ws
-    const ws = new WebSocket(url);
-    // if we disconnect, start polling
-    ws.onclose = reload_upon_connect;
-})()"#;
-
-            to.write_all(r#"<script>"#.as_bytes())?;
-            to.write_all(disconnect_js.as_bytes())?;
-            to.write_all(r#"</script>"#.as_bytes())?;
-        }
-
         let ServeConfig { index, .. } = &self.cfg;
 
-        to.write_all(index.post_main.as_bytes())?;
+        to.write_str(&index.close_head)?;
 
         Ok(())
     }
-}
 
-/// A rendered response from the server.
-#[derive(Debug)]
-pub struct RenderResponse {
-    pub(crate) html: String,
-    pub(crate) freshness: RenderFreshness,
-}
+    /// Render all content after the main element of the page.
+    pub fn render_after_main<R: std::fmt::Write>(
+        &self,
+        to: &mut R,
+    ) -> Result<(), dioxus_ssr::incremental::IncrementalRendererError> {
+        let ServeConfig { index, .. } = &self.cfg;
 
-impl RenderResponse {
-    /// Get the rendered HTML.
-    pub fn html(&self) -> &str {
-        &self.html
+        to.write_str(&index.post_main)?;
+
+        Ok(())
     }
 
-    /// Get the freshness of the rendered HTML.
-    pub fn freshness(&self) -> RenderFreshness {
-        self.freshness
+    /// Render all content after the body of the page.
+    pub fn render_after_body<R: std::fmt::Write>(
+        &self,
+        to: &mut R,
+    ) -> Result<(), dioxus_ssr::incremental::IncrementalRendererError> {
+        let ServeConfig { index, .. } = &self.cfg;
+
+        to.write_str(&index.after_closing_body_tag)?;
+
+        Ok(())
     }
 }
 
 fn pre_renderer() -> Renderer {
     let mut renderer = Renderer::default();
     renderer.pre_render = true;
-    renderer.into()
-}
-
-fn incremental_pre_renderer(
-    cfg: &IncrementalRendererConfig,
-) -> dioxus_ssr::incremental::IncrementalRenderer {
-    let mut renderer = cfg.clone().build();
-    renderer.renderer_mut().pre_render = true;
     renderer
-}
-
-#[cfg(all(feature = "ssr", feature = "router"))]
-/// Pre-caches all static routes
-pub async fn pre_cache_static_routes_with_props<Rt>(
-    cfg: &crate::prelude::ServeConfig<crate::router::FullstackRouterConfig<Rt>>,
-) -> Result<(), dioxus_ssr::incremental::IncrementalRendererError>
-where
-    Rt: dioxus_router::prelude::Routable + Send + Sync + Serialize,
-    <Rt as std::str::FromStr>::Err: std::fmt::Display,
-{
-    let wrapper = FullstackRenderer {
-        cfg: cfg.clone(),
-        server_context: Default::default(),
-    };
-    let mut renderer = incremental_pre_renderer(
-        cfg.incremental
-            .as_ref()
-            .expect("incremental renderer config must be set to pre-cache static routes"),
-    );
-
-    dioxus_router::incremental::pre_cache_static_routes::<Rt, _>(&mut renderer, &wrapper).await
-}
-
-struct WriteBuffer {
-    buffer: Vec<u8>,
-}
-
-impl std::fmt::Write for WriteBuffer {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.buffer.extend_from_slice(s.as_bytes());
-        Ok(())
-    }
-}
-
-impl std::ops::Deref for WriteBuffer {
-    type Target = Vec<u8>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.buffer
-    }
-}
-
-impl std::ops::DerefMut for WriteBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer
-    }
 }

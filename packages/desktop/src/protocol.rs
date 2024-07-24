@@ -1,11 +1,24 @@
 use crate::{assets::*, edits::EditQueue};
-use std::path::{Path, PathBuf};
+use dioxus_html::document::NATIVE_EVAL_JS;
+use dioxus_interpreter_js::unified_bindings::SLEDGEHAMMER_JS;
+use dioxus_interpreter_js::NATIVE_JS;
+use serde::Deserialize;
+use std::{
+    path::{Component, Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 use wry::{
-    http::{status::StatusCode, Request, Response, Uri},
+    http::{status::StatusCode, Request, Response},
     RequestAsyncResponder, Result,
 };
 
-static MINIFIED: &str = include_str!("./minified.js");
+#[cfg(any(target_os = "android", target_os = "windows"))]
+const EDITS_PATH: &str = "http://dioxus.index.html/edits";
+
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
+const EDITS_PATH: &str = "dioxus://index.html/edits";
+
 static DEFAULT_INDEX: &str = include_str!("./index.html");
 
 /// Build the index.html file we use for bootstrapping a new app
@@ -34,7 +47,17 @@ pub(super) fn index_request(
 
     // Insert a custom head if provided
     // We look just for the closing head tag. If a user provided a custom index with weird syntax, this might fail
-    if let Some(head) = custom_head {
+    let head = match custom_head {
+        Some(mut head) => {
+            if let Some(assets_head) = assets_head() {
+                head.push_str(&assets_head);
+            }
+            Some(head)
+        }
+        None => assets_head(),
+    };
+
+    if let Some(head) = head {
         index.insert_str(index.find("</head>").expect("Head element to exist"), &head);
     }
 
@@ -53,13 +76,79 @@ pub(super) fn index_request(
         .ok()
 }
 
+fn assets_head() -> Option<String> {
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        let assets_head_path = PathBuf::from("__assets_head.html");
+        let head = resolve_resource(&assets_head_path);
+        match std::fs::read_to_string(&head) {
+            Ok(s) => Some(s),
+            Err(err) => {
+                tracing::warn!("Assets built with manganis cannot be preloaded (failed to read {head:?}). This warning may occur when you build a desktop application without the dioxus CLI. If you do not use manganis, you can ignore this warning: {err}.");
+                None
+            }
+        }
+    }
+    #[cfg(not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    {
+        None
+    }
+}
+
+fn resolve_resource(path: &Path) -> PathBuf {
+    let mut base_path = get_asset_root_or_default();
+
+    if running_in_dev_mode() {
+        base_path.push(path);
+
+        // Special handler for Manganis filesystem fallback.
+        // We need this since Manganis provides assets from workspace root.
+        if !base_path.exists() {
+            let workspace_root = get_workspace_root_from_cargo();
+            let asset_path = workspace_root.join(path);
+            println!("ASSET PATH: {:?}", asset_path);
+            return asset_path;
+        }
+    } else {
+        let mut resource_path = PathBuf::new();
+        for component in path.components() {
+            // Tauri-bundle inserts special path segments for abnormal component paths
+            match component {
+                Component::Prefix(_) => {}
+                Component::RootDir => resource_path.push("_root_"),
+                Component::CurDir => {}
+                Component::ParentDir => resource_path.push("_up_"),
+                Component::Normal(p) => resource_path.push(p),
+            }
+        }
+        base_path.push(resource_path);
+    }
+    base_path
+}
+
 /// Handle a request from the webview
 ///
 /// - Tries to stream edits if they're requested.
 /// - If that doesn't match, tries a user provided asset handler
 /// - If that doesn't match, tries to serve a file from the filesystem
 pub(super) fn desktop_handler(
-    mut request: Request<Vec<u8>>,
+    request: Request<Vec<u8>>,
     asset_handlers: AssetHandlerRegistry,
     edit_queue: &EditQueue,
     responder: RequestAsyncResponder,
@@ -77,19 +166,12 @@ pub(super) fn desktop_handler(
             .as_ref(),
     );
 
-    let Some(name) = path.parent() else {
-        return tracing::error!("Asset request has no root {path:?}");
-    };
+    if path.parent().is_none() {
+        return tracing::error!("Asset request has no parent {path:?}");
+    }
 
-    if let Some(name) = name.to_str() {
+    if let Some(name) = path.iter().next().unwrap().to_str() {
         if asset_handlers.has_handler(name) {
-            // Trim the leading path from the URI
-            //
-            // I hope this is reliable!
-            //
-            // so a request for /assets/logos/logo.png?query=123 will become /logos/logo.png?query=123
-            strip_uri_prefix(&mut request, name);
-
             return asset_handlers.handle_request(name, request, responder);
         }
     }
@@ -97,17 +179,19 @@ pub(super) fn desktop_handler(
     // Else, try to serve a file from the filesystem.
     match serve_from_fs(path) {
         Ok(res) => responder.respond(res),
-        Err(e) => tracing::error!("Error serving request from filesystem {}", e),
+        Err(e) => {
+            tracing::error!("Error serving request from filesystem {}", e);
+        }
     }
 }
 
 fn serve_from_fs(path: PathBuf) -> Result<Response<Vec<u8>>> {
     // If the path is relative, we'll try to serve it from the assets directory.
-    let mut asset = get_asset_root_or_default().join(&path);
+    let mut asset = resolve_resource(&path);
 
     // If we can't find it, make it absolute and try again
     if !asset.exists() {
-        asset = PathBuf::from("/").join(path);
+        asset = PathBuf::from("/").join(&path);
     }
 
     if !asset.exists() {
@@ -121,26 +205,6 @@ fn serve_from_fs(path: PathBuf) -> Result<Response<Vec<u8>>> {
         .body(std::fs::read(asset)?)?)
 }
 
-fn strip_uri_prefix(request: &mut Request<Vec<u8>>, name: &str) {
-    // trim the leading path
-    if let Some(path) = request.uri().path_and_query() {
-        let new_path = path
-            .path()
-            .trim_start_matches('/')
-            .strip_prefix(name)
-            .expect("expected path to have prefix");
-
-        let new_uri = Uri::builder()
-            .scheme(request.uri().scheme_str().unwrap_or("http"))
-            .path_and_query(format!("{}{}", new_path, path.query().unwrap_or("")))
-            .authority("index.html")
-            .build()
-            .expect("failed to build new URI");
-
-        *request.uri_mut() = new_uri;
-    }
-}
-
 /// Construct the inline script that boots up the page and bridges the webview with rust code.
 ///
 /// The arguments here:
@@ -151,17 +215,28 @@ fn module_loader(root_id: &str, headless: bool) -> String {
     format!(
         r#"
 <script type="module">
-    {MINIFIED}
-    // Wait for the page to load
+    // Bring the sledgehammer code
+    {SLEDGEHAMMER_JS}
+
+    // And then extend it with our native bindings
+    {NATIVE_JS}
+
+    // The native interpreter extends the sledgehammer interpreter with a few extra methods that we use for IPC
+    window.interpreter = new NativeInterpreter("{EDITS_PATH}");
+
+    // Wait for the page to load before sending the initialize message
     window.onload = function() {{
-        let rootname = "{root_id}";
-        let root_element = window.document.getElementById(rootname);
+        let root_element = window.document.getElementById("{root_id}");
         if (root_element != null) {{
             window.interpreter.initialize(root_element);
             window.ipc.postMessage(window.interpreter.serializeIpcMessage("initialize"));
         }}
-        window.interpreter.wait_for_request({headless});
+        window.interpreter.waitForRequest({headless});
     }}
+</script>
+<script type="module">
+    // Include the code for eval
+    {NATIVE_EVAL_JS}
 </script>
 "#
     )
@@ -172,7 +247,13 @@ fn module_loader(root_id: &str, headless: bool) -> String {
 /// Defaults to the current directory if no asset directory is found, which is useful for development when the app
 /// isn't bundled.
 fn get_asset_root_or_default() -> PathBuf {
-    get_asset_root().unwrap_or_else(|| Path::new(".").to_path_buf())
+    get_asset_root().unwrap_or_else(|| std::env::current_dir().unwrap())
+}
+
+fn running_in_dev_mode() -> bool {
+    // If running under cargo, there's no bundle!
+    // There might be a smarter/more resilient way of doing this
+    std::env::var_os("CARGO").is_some()
 }
 
 /// Get the asset directory, following tauri/cargo-bundles directory discovery approach
@@ -186,10 +267,11 @@ fn get_asset_root_or_default() -> PathBuf {
 /// - [ ] Android
 #[allow(unreachable_code)]
 fn get_asset_root() -> Option<PathBuf> {
-    // If running under cargo, there's no bundle!
-    // There might be a smarter/more resilient way of doing this
-    if std::env::var_os("CARGO").is_some() {
-        return None;
+    if running_in_dev_mode() {
+        return dioxus_cli_config::CURRENT_CONFIG
+            .as_ref()
+            .map(|c| c.application.out_dir.clone())
+            .ok();
     }
 
     #[cfg(target_os = "macos")]
@@ -237,4 +319,32 @@ fn get_mime_by_ext(trimmed: &Path) -> &'static str {
         // using octet stream according to this:
         None => "application/octet-stream",
     }
+}
+
+/// A global that stores the workspace root. Used in [`get_workspace_root_from_cargo`].
+static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Describes the metadata we need from `cargo metadata`.
+#[derive(Deserialize)]
+struct CargoMetadata {
+    workspace_root: PathBuf,
+}
+
+/// Get the workspace root using `cargo metadata`. Should not be used in release mode.
+pub(crate) fn get_workspace_root_from_cargo() -> PathBuf {
+    WORKSPACE_ROOT
+        .get_or_init(|| {
+            let out = Command::new("cargo")
+                .args(["metadata", "--format-version", "1", "--no-deps"])
+                .output()
+                .expect("`cargo metadata` failed to run");
+
+            let out =
+                String::from_utf8(out.stdout).expect("failed to parse output of `cargo metadata`");
+            let metadata = serde_json::from_str::<CargoMetadata>(&out)
+                .expect("failed to deserialize data from `cargo metadata`");
+
+            metadata.workspace_root
+        })
+        .to_owned()
 }

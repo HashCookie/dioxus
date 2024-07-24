@@ -1,174 +1,64 @@
-use dioxus_core::{ScopeState, TaskId};
-use std::{
-    any::Any,
-    cell::{Cell, RefCell},
-    future::Future,
-    rc::Rc,
-};
+use std::{cell::Cell, rc::Rc};
 
-use crate::UseFutureDep;
+use dioxus_core::prelude::*;
+use futures_util::StreamExt;
 
-/// A hook that provides a future that executes after the hooks have been applied.
-///
-/// Whenever the hooks dependencies change, the future will be re-evaluated.
-/// If a future is pending when the dependencies change, the previous future
-/// will be allowed to continue.
-///
-/// **Note:** If your dependency list is always empty, use [`use_on_create`](crate::use_on_create).
-///
-/// ## Arguments
-///
-/// - `dependencies`: a tuple of references to values that are `PartialEq` + `Clone`.
-/// - `future`: a closure that takes the `dependencies` as arguments and returns a `'static` future. That future may return nothing or a closure that will be executed when the dependencies change to clean up the effect.
-///
-/// ## Examples
-///
-/// ```rust, no_run
-/// # use dioxus::prelude::*;
-/// #[component]
-/// fn Profile(cx: Scope, id: usize) -> Element {
-///     let name = use_state(cx, || None);
-///
-///     // Only fetch the user data when the id changes.
-///     use_effect(cx, (id,), |(id,)| {
-///         to_owned![name];
-///         async move {
-///             let user = fetch_user(id).await;
-///             name.set(user.name);
-///         }
-///     });
-///
-///     // Only fetch the user data when the id changes.
-///     use_effect(cx, (id,), |(id,)| {
-///         to_owned![name];
-///         async move {
-///             let user = fetch_user(id).await;
-///             name.set(user.name);
-///             move || println!("Cleaning up from {}", id)
-///         }
-///     });
-///
-///     let name = name.get().clone().unwrap_or("Loading...".to_string());
-///
-///     render!(
-///         p { "{name}" }
-///     )
-/// }
-///
-/// #[component]
-/// fn App(cx: Scope) -> Element {
-///     render!(Profile { id: 0 })
-/// }
-/// ```
-pub fn use_effect<T, R, D>(cx: &ScopeState, dependencies: D, future: impl FnOnce(D::Out) -> R)
-where
-    D: UseFutureDep,
-    R: UseEffectReturn<T>,
-{
-    struct UseEffect {
-        needs_regen: bool,
-        task: Cell<Option<TaskId>>,
-        dependencies: Vec<Box<dyn Any>>,
-        cleanup: UseEffectCleanup,
-    }
+use crate::use_callback;
 
-    impl Drop for UseEffect {
-        fn drop(&mut self) {
-            if let Some(cleanup) = self.cleanup.borrow_mut().take() {
-                cleanup();
+#[doc = include_str!("../docs/side_effects.md")]
+#[doc = include_str!("../docs/rules_of_hooks.md")]
+#[track_caller]
+pub fn use_effect(callback: impl FnMut() + 'static) -> Effect {
+    let callback = use_callback(callback);
+
+    let location = std::panic::Location::caller();
+
+    use_hook(|| {
+        // Inside the effect, we track any reads so that we can rerun the effect if a value the effect reads changes
+        let (rc, mut changed) = ReactiveContext::new_with_origin(location);
+
+        // Deduplicate queued effects
+        let effect_queued = Rc::new(Cell::new(false));
+
+        // Spawn a task that will run the effect when:
+        // 1) The component is first run
+        // 2) The effect is rerun due to an async read at any time
+        // 3) The effect is rerun in the same tick that the component is rerun: we need to wait for the component to rerun before we can run the effect again
+        let queue_effect_for_next_render = move || {
+            if effect_queued.get() {
+                return;
             }
-        }
-    }
-
-    let state = cx.use_hook(move || UseEffect {
-        needs_regen: true,
-        task: Cell::new(None),
-        dependencies: Vec::new(),
-        cleanup: Rc::new(RefCell::new(None)),
-    });
-
-    if dependencies.clone().apply(&mut state.dependencies) || state.needs_regen {
-        // Call the cleanup function if it exists
-        if let Some(cleanup) = state.cleanup.borrow_mut().take() {
-            cleanup();
-        }
-
-        // We don't need regen anymore
-        state.needs_regen = false;
-
-        // Create the new future
-        let return_value = future(dependencies.out());
-
-        let task = return_value.apply(state.cleanup.clone(), cx);
-        state.task.set(Some(task));
-    }
-}
-
-type UseEffectCleanup = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
-
-/// Something that can be returned from a `use_effect` hook.
-pub trait UseEffectReturn<T> {
-    fn apply(self, oncleanup: UseEffectCleanup, cx: &ScopeState) -> TaskId;
-}
-
-impl<T> UseEffectReturn<()> for T
-where
-    T: Future<Output = ()> + 'static,
-{
-    fn apply(self, _: UseEffectCleanup, cx: &ScopeState) -> TaskId {
-        cx.push_future(self)
-    }
-}
-
-#[doc(hidden)]
-pub struct CleanupFutureMarker;
-impl<T, F> UseEffectReturn<CleanupFutureMarker> for T
-where
-    T: Future<Output = F> + 'static,
-    F: FnOnce() + 'static,
-{
-    fn apply(self, oncleanup: UseEffectCleanup, cx: &ScopeState) -> TaskId {
-        cx.push_future(async move {
-            let cleanup = self.await;
-            *oncleanup.borrow_mut() = Some(Box::new(cleanup) as Box<dyn FnOnce()>);
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[allow(unused)]
-    #[test]
-    fn test_use_future() {
-        use dioxus_core::prelude::*;
-
-        struct MyProps {
-            a: String,
-            b: i32,
-            c: i32,
-            d: i32,
-            e: i32,
-        }
-
-        fn app(cx: Scope<MyProps>) -> Element {
-            // should only ever run once
-            use_effect(cx, (), |_| async move {
-                //
+            effect_queued.set(true);
+            let effect_queued = effect_queued.clone();
+            queue_effect(move || {
+                rc.reset_and_run_in(&*callback);
+                effect_queued.set(false);
             });
+        };
 
-            // runs when a is changed
-            use_effect(cx, (&cx.props.a,), |(a,)| async move {
-                //
-            });
+        queue_effect_for_next_render();
+        spawn(async move {
+            loop {
+                // Wait for context to change
+                let _ = changed.next().await;
 
-            // runs when a or b is changed
-            use_effect(cx, (&cx.props.a, &cx.props.b), |(a, b)| async move {
-                //
-            });
+                // Run the effect
+                queue_effect_for_next_render();
+            }
+        });
+        Effect { rc }
+    })
+}
 
-            todo!()
-        }
+/// A handle to an effect.
+#[derive(Clone, Copy)]
+pub struct Effect {
+    rc: ReactiveContext,
+}
+
+impl Effect {
+    /// Marks the effect as dirty, causing it to rerun on the next render.
+    pub fn mark_dirty(&mut self) {
+        self.rc.mark_dirty();
     }
 }

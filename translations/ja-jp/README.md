@@ -40,7 +40,7 @@
     <span> | </span>
     <a href="https://github.com/DioxusLabs/example-projects"> 例 </a>
     <span> | </span>
-    <a href="https://dioxuslabs.com/learn/0.4/"> ガイド </a>
+    <a href="https://dioxuslabs.com/learn/0.5/"> ガイド </a>
     <span> | </span>
     <a href="https://github.com/DioxusLabs/dioxus/blob/master/notes/README/ZH_CN.md"> 中文 </a>
     <span> | </span>
@@ -53,10 +53,10 @@
 Dioxus は、Rust でクロスプラットフォームのユーザー・インターフェースを構築するための、移植性が高く、パフォーマンスと人間工学に基づいたフレームワークです。
 
 ```rust
-fn app(cx: Scope) -> Element {
-    let mut count = use_state(cx, || 0);
+fn app() -> Element {
+    let mut count = use_signal(|| 0);
 
-    cx.render(rsx! {
+    rsx! {
         h1 { "High-Five counter: {count}" }
         button { onclick: move |_| count += 1, "Up high!" }
         button { onclick: move |_| count -= 1, "Down low!" }

@@ -1,153 +1,142 @@
-use dioxus::prelude::*;
+use dioxus_lib::prelude::*;
 use serde::{de::DeserializeOwned, Serialize};
-use std::any::Any;
-use std::cell::Cell;
-use std::cell::Ref;
-use std::cell::RefCell;
-use std::fmt::Debug;
 use std::future::Future;
-use std::rc::Rc;
-use std::sync::Arc;
 
-/// A future that resolves to a value.
+/// Runs a future with a manual list of dependencies and returns a resource with the result if the future is finished or a suspended error if it is still running.
 ///
-/// This runs the future only once - though the future may be regenerated
-/// through the [`UseServerFuture::restart`] method.
 ///
-/// This is commonly used for components that cannot be rendered until some
-/// asynchronous operation has completed.
+/// On the server, this will wait until the future is resolved before continuing to render. When the future is resolved, the result will be serialized into the page and hydrated on the client without rerunning the future.
 ///
-/// Whenever the hooks dependencies change, the future will be re-evaluated.
-/// If a future is pending when the dependencies change, the previous future
-/// will be allowed to continue
 ///
-/// - dependencies: a tuple of references to values that are PartialEq + Clone
+/// <div class="warning">
+///
+/// Unlike [`use_resource`] dependencies are only tracked inside the function that spawns the async block, not the async block itself.
+///
+/// ```rust, no_run
+/// # use dioxus::prelude::*;
+/// // ❌ The future inside of use_server_future is not reactive
+/// let id = use_signal(|| 0);
+/// use_server_future(move || {
+///     async move {
+///          // But the future is not reactive which means that the future will not subscribe to any reads here
+///          println!("{id}");
+///     }
+/// });
+/// // ✅ The closure that creates the future for use_server_future is reactive
+/// let id = use_signal(|| 0);
+/// use_server_future(move || {
+///     // The closure itself is reactive which means the future will subscribe to any signals you read here
+///     let cloned_id = id();
+///     async move {
+///          // But the future is not reactive which means that the future will not subscribe to any reads here
+///          println!("{cloned_id}");
+///     }
+/// });
+/// ```
+///
+/// </div>
+///
+/// # Example
+///
+/// ```rust, no_run
+/// # use dioxus::prelude::*;
+/// # async fn fetch_article(id: u32) -> String { todo!() }
+/// use dioxus::prelude::*;
+///
+/// fn App() -> Element {
+///     let mut article_id = use_signal(|| 0);
+///     // `use_server_future` will spawn a task that runs on the server and serializes the result to send to the client.
+///     // The future will rerun any time the
+///     // Since we bubble up the suspense with `?`, the server will wait for the future to resolve before rendering
+///     let article = use_server_future(move || fetch_article(article_id()))?;
+///
+///     rsx! {
+///         "{article().unwrap()}"
+///     }
+/// }
+/// ```
 #[must_use = "Consider using `cx.spawn` to run a future without reading its value"]
-pub fn use_server_future<T, F, D>(
-    cx: &ScopeState,
-    dependencies: D,
-    future: impl FnOnce(D::Out) -> F,
-) -> Option<&UseServerFuture<T>>
+pub fn use_server_future<T, F>(
+    mut future: impl FnMut() -> F + 'static,
+) -> Result<Resource<T>, RenderError>
 where
-    T: 'static + Serialize + DeserializeOwned + Debug,
+    T: Serialize + DeserializeOwned + 'static,
     F: Future<Output = T> + 'static,
-    D: UseFutureDep,
 {
-    let state = cx.use_hook(move || UseServerFuture {
-        update: cx.schedule_update(),
-        needs_regen: Cell::new(true),
-        value: Default::default(),
-        task: Cell::new(None),
-        dependencies: Vec::new(),
+    #[cfg(feature = "server")]
+    let serialize_context = crate::html_storage::use_serialize_context();
+    // We always create a storage entry, even if the data isn't ready yet to make it possible to deserialize pending server futures on the client
+    #[cfg(feature = "server")]
+    let server_storage_entry = use_hook(|| serialize_context.create_entry());
+
+    // If this is the first run and we are on the web client, the data might be cached
+    #[cfg(feature = "web")]
+    let initial_web_result = use_hook(|| {
+        tracing::info!("First run of use_server_future");
+
+        std::rc::Rc::new(std::cell::RefCell::new(Some(
+            dioxus_web::take_server_data::<T>(),
+        )))
     });
 
-    let first_run = { state.value.borrow().as_ref().is_none() && state.task.get().is_none() };
+    let resource = use_resource(move || {
+        #[cfg(feature = "server")]
+        let serialize_context = serialize_context.clone();
+        let user_fut = future();
+        #[cfg(feature = "web")]
+        let initial_web_result = initial_web_result.clone();
 
-    #[cfg(not(feature = "ssr"))]
-    {
-        if first_run {
-            match crate::html_storage::deserialize::take_server_data() {
-                Some(data) => {
-                    tracing::trace!("Loaded {data:?} from server");
-                    *state.value.borrow_mut() = Some(Box::new(data));
-                    state.needs_regen.set(false);
-                    return Some(state);
-                }
-                None => {
-                    tracing::trace!("Failed to load from server... running future");
-                }
-            };
-        }
-    }
-
-    if dependencies.clone().apply(&mut state.dependencies) || state.needs_regen.get() {
-        // We don't need regen anymore
-        state.needs_regen.set(false);
-
-        // Create the new future
-        let fut = future(dependencies.out());
-
-        // Clone in our cells
-        let value = state.value.clone();
-        let schedule_update = state.update.clone();
-
-        // Cancel the current future
-        if let Some(current) = state.task.take() {
-            cx.remove_future(current);
-        }
-
-        state.task.set(Some(cx.push_future(async move {
-            let data;
-            #[cfg(feature = "ssr")]
+        async move {
+            // If this is the first run and we are on the web client, the data might be cached
+            #[cfg(feature = "web")]
             {
-                data = fut.await;
-                if first_run {
-                    if let Err(err) = crate::prelude::server_context().push_html_data(&data) {
-                        tracing::error!("Failed to push HTML data: {}", err);
-                    };
+                let initial = initial_web_result.borrow_mut().take();
+                match initial {
+                    // This isn't the first run
+                    None => {}
+                    // This is the first run
+                    Some(first_run) => {
+                        match first_run {
+                            // THe data was deserialized successfully from the server
+                            Ok(Some(o)) => return o,
+                            // The data is still pending from the server. Don't try to resolve it on the client
+                            Ok(None) => {
+                                tracing::trace!("Waiting for server data");
+                                std::future::pending::<()>().await;
+                            }
+                            // The data was not available on the server, rerun the future
+                            Err(_) => {}
+                        }
+                    }
                 }
             }
-            #[cfg(not(feature = "ssr"))]
-            {
-                data = fut.await;
+
+            // Otherwise just run the future itself
+            let out = user_fut.await;
+
+            // If this is the first run and we are on the server, cache the data in the slot we reserved for it
+            #[cfg(feature = "server")]
+            serialize_context.insert(server_storage_entry, &out);
+
+            #[allow(clippy::let_and_return)]
+            out
+        }
+    });
+
+    // On the first run, force this task to be polled right away in case its value is ready
+    use_hook(|| {
+        let _ = resource.task().poll_now();
+    });
+
+    // Suspend if the value isn't ready
+    match resource.state().cloned() {
+        UseResourceState::Pending => {
+            let task = resource.task();
+            if !task.paused() {
+                return Err(suspend(task).unwrap_err());
             }
-            *value.borrow_mut() = Some(Box::new(data));
-
-            schedule_update();
-        })));
-    }
-
-    if first_run {
-        #[cfg(feature = "ssr")]
-        {
-            tracing::trace!("Suspending first run of use_server_future");
-            cx.suspend();
+            Ok(resource)
         }
-        None
-    } else {
-        Some(state)
-    }
-}
-
-pub struct UseServerFuture<T> {
-    update: Arc<dyn Fn()>,
-    needs_regen: Cell<bool>,
-    task: Cell<Option<TaskId>>,
-    dependencies: Vec<Box<dyn Any>>,
-    value: Rc<RefCell<Option<Box<T>>>>,
-}
-
-impl<T> UseServerFuture<T> {
-    /// Restart the future with new dependencies.
-    ///
-    /// Will not cancel the previous future, but will ignore any values that it
-    /// generates.
-    pub fn restart(&self) {
-        self.needs_regen.set(true);
-        (self.update)();
-    }
-
-    /// Forcefully cancel a future
-    pub fn cancel(&self, cx: &ScopeState) {
-        if let Some(task) = self.task.take() {
-            cx.remove_future(task);
-        }
-    }
-
-    /// Return any value, even old values if the future has not yet resolved.
-    ///
-    /// If the future has never completed, the returned value will be `None`.
-    pub fn value(&self) -> Ref<'_, T> {
-        Ref::map(self.value.borrow(), |v| v.as_deref().unwrap())
-    }
-
-    /// Get the ID of the future in Dioxus' internal scheduler
-    pub fn task(&self) -> Option<TaskId> {
-        self.task.get()
-    }
-
-    /// Get the current state of the future.
-    pub fn reloading(&self) -> bool {
-        self.task.get().is_some()
+        _ => Ok(resource),
     }
 }
